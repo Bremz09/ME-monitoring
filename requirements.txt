@@ -1,0 +1,14 @@
+pandas==2.1.4
+streamlit==1.32.2
+plotly==5.9.0
+numpy==1.26.4
+Pillow==10.2.0
+openpyxl==3.1.2
+matplotlib==3.8.0
+scipy==1.11.4
+xlwings==0.29.1
+XlsxWriter==3.1.0
+streamlit-authenticator==0.2.2
+streamlit-image-comparison==0.0.4
+statsmodels==0.14.0
+scikit-learn==1.2.2
