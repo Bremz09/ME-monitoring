@@ -87,7 +87,7 @@ if authentication_status:
     df_training_sorted = df_athlete_training.sort_values("Date")
     df_training_last52 = df_training_sorted.tail(weeks)
     # Get previous 52 entries
-    df_training_prev52 = df_training_sorted.iloc[-weeks*2:-weeks] if len(df_training_sorted) >= weeks*2 else None
+    df_training_prev52 = df_training_sorted.iloc[-weeks - 52:-52] if len(df_training_sorted) >= weeks + 52 else None
     st.header("Training Data")
     fig = go.Figure()
 
@@ -285,7 +285,7 @@ if authentication_status:
             hovertemplate="Date: %{x}<br>4 Wk kJ (Prev Year): %{y}<br>Week: %{customdata}<extra></extra>"
         ))
     fig_kj.update_layout(
-        title="kJ and Rolling Metrics (Last {weeks} weeks)",
+        title=f"kJ and Rolling Metrics (Last {weeks} weeks)",
         xaxis_title="Date",
         yaxis_title="kJ"
     )
