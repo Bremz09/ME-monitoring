@@ -60,15 +60,242 @@ if authentication_status:
             )
         return df
     
+    @st.cache_data
+    def get_training_data_from_excel(athlete):
+        df = pd.read_excel(
+            io='pages/ME_Monitoring/ME_Training.xlsx',
+            engine ='openpyxl',
+            sheet_name=athlete.split(" ")[0],
+            skiprows=0,
+            usecols='A:P',
+            nrows=400
+            )
+        return df
+    
     df_nutrition = get_nutrition_data_from_excel()
 
-    df_nutrition
+    
+    c1,c2 = st.columns(2)
+    with c1:
+        athlete = st.selectbox("Select athlete", options=df_nutrition['Name'].unique())
+    with c2:
+        weeks = st.slider("Select number of weeks to display", min_value=4, max_value=52, value=52, step=1)
+    df_athlete_training = get_training_data_from_excel(athlete).dropna(axis=1, how='all')
 
-    athlete = st.selectbox("Select athlete", options=df_nutrition['Name'].unique())
+    
 
+    df_training_sorted = df_athlete_training.sort_values("Date")
+    df_training_last52 = df_training_sorted.tail(weeks)
+    # Get previous 52 entries
+    df_training_prev52 = df_training_sorted.iloc[-weeks*2:-weeks] if len(df_training_sorted) >= weeks*2 else None
+    st.header("Training Data")
+    fig = go.Figure()
+
+    # Bar for Hours (bike)
+    fig.add_trace(go.Bar(
+        x=df_training_last52["Date"],
+        y=df_training_last52["Hours (bike)"],
+        name="Hours (bike)",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>Hours (bike): %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+
+    # Current year lines
+    fig.add_trace(go.Scatter(
+        x=df_training_last52["Date"],
+        y=df_training_last52["4 Wk Hours"],
+        mode="lines+markers",
+        name="4 Wk Hours",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>4 Wk Hours: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+    fig.add_trace(go.Scatter(
+        x=df_training_last52["Date"],
+        y=df_training_last52["8 Wk Weighted H"],
+        mode="lines+markers",
+        name="8 Wk Weighted H",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>8 Wk Weighted H: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+    fig.add_trace(go.Scatter(
+        x=df_training_last52["Date"],
+        y=df_training_last52["8 Wk Log H"],
+        mode="lines+markers",
+        name="8 Wk Log H",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>8 Wk Log H: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+
+    # Overlay previous year values mapped to current x-axis
+    if df_training_prev52 is not None and len(df_training_prev52) == weeks:
+        # Align previous year values to current year dates
+        prev_4wk = df_training_prev52["4 Wk Hours"].values
+        prev_8wk_weighted = df_training_prev52["8 Wk Weighted H"].values
+        prev_8wk_log = df_training_prev52["8 Wk Log H"].values
+        prev_week = df_training_prev52["Week"].values
+        current_dates = df_training_last52["Date"].values
+
+        fig.add_trace(go.Scatter(
+            x=current_dates,
+            y=prev_4wk,
+            mode="lines+markers",
+            name="4 Wk Hours (Prev Year)",
+            line=dict(dash="dash"),
+            customdata=prev_week,
+            hovertemplate="Date: %{x}<br>4 Wk Hours (Prev Year): %{y}<br>Week: %{customdata}<extra></extra>"
+        ))
+        fig.add_trace(go.Scatter(
+            x=current_dates,
+            y=prev_8wk_weighted,
+            mode="lines+markers",
+            name="8 Wk Weighted H (Prev Year)",
+            line=dict(dash="dash"),
+            customdata=prev_week,
+            hovertemplate="Date: %{x}<br>8 Wk Weighted H (Prev Year): %{y}<br>Week: %{customdata}<extra></extra>"
+        ))
+        fig.add_trace(go.Scatter(
+            x=current_dates,
+            y=prev_8wk_log,
+            mode="lines+markers",
+            name="8 Wk Log H (Prev Year)",
+            line=dict(dash="dash"),
+            customdata=prev_week,
+            hovertemplate="Date: %{x}<br>8 Wk Log H (Prev Year): %{y}<br>Week: %{customdata}<extra></extra>"
+        ))
+
+    fig.update_layout(
+        title=f"Bike Hours and Rolling Metrics (Last {weeks} weeks)",
+        xaxis_title="Date",
+        yaxis_title="Hours"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+
+    # --- TSS Metrics Plot ---
+    fig_tss = go.Figure()
+    # Bar for TSS
+    fig_tss.add_trace(go.Bar(
+        x=df_training_last52["Date"],
+        y=df_training_last52["TSS"],
+        name="TSS",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>TSS: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+    # Current year lines
+    fig_tss.add_trace(go.Scatter(
+        x=df_training_last52["Date"],
+        y=df_training_last52["4 Wk TSS"],
+        mode="lines+markers",
+        name="4 Wk TSS",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>4 Wk TSS: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+    fig_tss.add_trace(go.Scatter(
+        x=df_training_last52["Date"],
+        y=df_training_last52["8 Wk Weighted TSS"],
+        mode="lines+markers",
+        name="8 Wk Weighted TSS",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>8 Wk Weighted TSS: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+    fig_tss.add_trace(go.Scatter(
+        x=df_training_last52["Date"],
+        y=df_training_last52["8 Wk Log TSS"],
+        mode="lines+markers",
+        name="8 Wk Log TSS",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>8 Wk Log TSS: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+    # Overlay previous year values mapped to current x-axis
+    if df_training_prev52 is not None and len(df_training_prev52) == weeks:
+        prev_tss = df_training_prev52["TSS"].values
+        prev_4wk_tss = df_training_prev52["4 Wk TSS"].values
+        prev_8wk_weighted_tss = df_training_prev52["8 Wk Weighted TSS"].values
+        prev_8wk_log_tss = df_training_prev52["8 Wk Log TSS"].values
+        prev_week = df_training_prev52["Week"].values
+        current_dates = df_training_last52["Date"].values
+        fig_tss.add_trace(go.Scatter(
+            x=current_dates,
+            y=prev_4wk_tss,
+            mode="lines+markers",
+            name="4 Wk TSS (Prev Year)",
+            line=dict(dash="dash"),
+            customdata=prev_week,
+            hovertemplate="Date: %{x}<br>4 Wk TSS (Prev Year): %{y}<br>Week: %{customdata}<extra></extra>"
+        ))
+        fig_tss.add_trace(go.Scatter(
+            x=current_dates,
+            y=prev_8wk_weighted_tss,
+            mode="lines+markers",
+            name="8 Wk Weighted TSS (Prev Year)",
+            line=dict(dash="dash"),
+            customdata=prev_week,
+            hovertemplate="Date: %{x}<br>8 Wk Weighted TSS (Prev Year): %{y}<br>Week: %{customdata}<extra></extra>"
+        ))
+        fig_tss.add_trace(go.Scatter(
+            x=current_dates,
+            y=prev_8wk_log_tss,
+            mode="lines+markers",
+            name="8 Wk Log TSS (Prev Year)",
+            line=dict(dash="dash"),
+            customdata=prev_week,
+            hovertemplate="Date: %{x}<br>8 Wk Log TSS (Prev Year): %{y}<br>Week: %{customdata}<extra></extra>"
+        ))
+    fig_tss.update_layout(
+        title=f"TSS and Rolling Metrics (Last {weeks} weeks)",
+        xaxis_title="Date",
+        yaxis_title="TSS"
+    )
+    st.plotly_chart(fig_tss, use_container_width=True)
+
+    # --- kj Metrics Plot ---
+    fig_kj = go.Figure()
+    # Bar for kj
+    fig_kj.add_trace(go.Bar(
+        x=df_training_last52["Date"],
+        y=df_training_last52["kJ"],
+        name="kJ",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>kJ: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+    # Current year line for 4 Wk kJ
+    fig_kj.add_trace(go.Scatter(
+        x=df_training_last52["Date"],
+        y=df_training_last52["4 Wk kJ"],
+        mode="lines+markers",
+        name="4 Wk kJ",
+        customdata=df_training_last52["Week"],
+        hovertemplate="Date: %{x}<br>4 Wk kJ: %{y}<br>Week: %{customdata}<extra></extra>"
+    ))
+    # Overlay previous year values mapped to current x-axis
+    if df_training_prev52 is not None and len(df_training_prev52) == weeks:
+        prev_kj = df_training_prev52["kJ"].values
+        prev_4wk_kj = df_training_prev52["4 Wk kJ"].values
+        prev_week = df_training_prev52["Week"].values
+        current_dates = df_training_last52["Date"].values
+        fig_kj.add_trace(go.Scatter(
+            x=current_dates,
+            y=prev_4wk_kj,
+            mode="lines+markers",
+            name="4 Wk kJ (Prev Year)",
+            line=dict(dash="dash"),
+            customdata=prev_week,
+            hovertemplate="Date: %{x}<br>4 Wk kJ (Prev Year): %{y}<br>Week: %{customdata}<extra></extra>"
+        ))
+    fig_kj.update_layout(
+        title="kJ and Rolling Metrics (Last {weeks} weeks)",
+        xaxis_title="Date",
+        yaxis_title="kJ"
+    )
+    st.plotly_chart(fig_kj, use_container_width=True)
+
+    st.markdown("---")
+    st.header("Nutrition Data")
     df_athlete_nutrition = df_nutrition[df_nutrition['Name']==athlete].copy()
 
-    df_athlete_nutrition
+    
 
     fig = px.line(df_athlete_nutrition.loc[df_athlete_nutrition['Theme of Consult']=='Body Comp'], x='Date', y=['Height (cm)', 'Body Mass (kg)','Sum8 (mm)','FFM (SFTA; kg)',
                                                      'Corrected Girths (Thigh; cm)','BIA FM (kg)','BIA SMM (kg)'], markers=True)
