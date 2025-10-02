@@ -74,6 +74,22 @@ if authentication_status:
     
     df_nutrition = get_nutrition_data_from_excel()
 
+    @st.cache_data
+    def get_power_zone_data_from_excel(athlete):
+        df = pd.read_excel(
+            io='pages/ME_Monitoring/ME_Power_Zones.xlsx',
+            engine ='openpyxl',
+            sheet_name="Sheet1",
+            skiprows=0,
+            usecols='A:J',
+            nrows=20000
+            )
+        name = athlete.split(" ")[0]+" "+athlete.split(" ")[1]
+        df = df[df['Name']==name]
+        return df
+    
+    
+
     
     c1,c2 = st.columns(2)
     with c1:
@@ -81,6 +97,8 @@ if authentication_status:
     with c2:
         weeks = st.slider("Select number of weeks to display", min_value=4, max_value=52, value=52, step=1)
     df_athlete_training = get_training_data_from_excel(athlete).dropna(axis=1, how='all')
+    df_zones = get_power_zone_data_from_excel(athlete)
+    
 
     
 
@@ -290,6 +308,111 @@ if authentication_status:
         yaxis_title="kJ"
     )
     st.plotly_chart(fig_kj, use_container_width=True)
+
+    # --- Power Zones Plot ---
+    st.markdown("---")
+    st.header("Power Zone Distribution")
+    
+    if not df_zones.empty:
+        # Check if we have the required columns
+        if 'Power Zone Label' in df_zones.columns and 'Power Zone Seconds' in df_zones.columns:
+            # Convert seconds to minutes for better readability
+            df_zones_copy = df_zones.copy()
+            df_zones_copy['Power Zone Minutes'] = (df_zones_copy['Power Zone Seconds'] / 60).round(2)
+            
+            # Group by Power Zone Label and sum the minutes
+            zone_summary = df_zones_copy.groupby('Power Zone Label')['Power Zone Minutes'].sum().reset_index()
+            zone_summary = zone_summary.sort_values('Power Zone Minutes', ascending=False)
+            zone_summary['Power Zone Minutes'] = zone_summary['Power Zone Minutes'].round(2)
+            
+            # Also show weekly breakdown if Date column exists
+            if 'Date' in df_zones.columns:
+                # Convert Date to week for weekly aggregation
+                df_zones_copy['Date'] = pd.to_datetime(df_zones_copy['Date'])
+                
+                # Calculate week start date (Monday) for each date
+                df_zones_copy['Week_Start'] = df_zones_copy['Date'] - pd.to_timedelta(df_zones_copy['Date'].dt.weekday, unit='D')
+                
+                # Filter to show only the selected number of weeks
+                latest_week = df_zones_copy['Week_Start'].max()
+                cutoff_date = latest_week - pd.Timedelta(weeks=weeks-1)
+                df_zones_filtered = df_zones_copy[df_zones_copy['Week_Start'] >= cutoff_date]
+                
+                # Group by week start and power zone
+                weekly_zones = df_zones_filtered.groupby(['Week_Start', 'Power Zone Label'])['Power Zone Minutes'].sum().reset_index()
+                weekly_zones['Power Zone Minutes'] = weekly_zones['Power Zone Minutes'].round(2)
+                
+                # Pivot to get zones as columns
+                weekly_pivot = weekly_zones.pivot(index='Week_Start', columns='Power Zone Label', values='Power Zone Minutes').fillna(0)
+                
+                # Create stacked bar chart for weekly view
+                fig_weekly = go.Figure()
+                
+                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#bcbd22', '#17becf']
+                
+                for i, zone in enumerate(weekly_pivot.columns):
+                    fig_weekly.add_trace(go.Bar(
+                        x=weekly_pivot.index,
+                        y=weekly_pivot[zone],
+                        name=zone,
+                        marker_color=colors[i % len(colors)],
+                        hovertemplate="<b>Week Starting:</b> %{x}<br>" +
+                                    f"<b>Power Zone:</b> {zone}<br>" +
+                                    "<b>Time:</b> %{y:.2f} minutes<br>" +
+                                    "<extra></extra>"
+                    ))
+                
+                fig_weekly.update_layout(
+                    title=f'Weekly Power Zone Distribution for {athlete}',
+                    xaxis_title='Week Starting (Monday)',
+                    yaxis_title='Time (minutes)',
+                    barmode='stack',
+                    xaxis={'tickangle': 45}
+                )
+                
+                st.plotly_chart(fig_weekly, use_container_width=True)
+                
+                # Create normalized percentage chart
+                st.subheader("Percentage Distribution")
+                
+                # Calculate weekly totals for normalization
+                weekly_totals = weekly_pivot.sum(axis=1)
+                weekly_percentage = weekly_pivot.div(weekly_totals, axis=0) * 100
+                
+                # Create percentage stacked bar chart
+                fig_percentage = go.Figure()
+                
+                for i, zone in enumerate(weekly_percentage.columns):
+                    # Get corresponding absolute values for tooltip
+                    absolute_values = weekly_pivot[zone]
+                    
+                    fig_percentage.add_trace(go.Bar(
+                        x=weekly_percentage.index,
+                        y=weekly_percentage[zone],
+                        name=zone,
+                        marker_color=colors[i % len(colors)],
+                        customdata=absolute_values,
+                        hovertemplate="<b>Week Starting:</b> %{x}<br>" +
+                                    f"<b>Power Zone:</b> {zone}<br>" +
+                                    "<b>Percentage:</b> %{y:.1f}%<br>" +
+                                    "<b>Total Time:</b> %{customdata:.2f} minutes<br>" +
+                                    "<extra></extra>"
+                    ))
+                
+                fig_percentage.update_layout(
+                    title=f'Weekly Power Zone Distribution (%) for {athlete}',
+                    xaxis_title='Week Starting (Monday)',
+                    yaxis_title='Percentage (%)',
+                    barmode='stack',
+                    xaxis={'tickangle': 45}
+                )
+                
+                st.plotly_chart(fig_percentage, use_container_width=True)
+        else:
+            st.write("Missing required columns: 'Power Zone Label' and/or 'Power Zone Seconds'")
+            st.write("Available columns:", df_zones.columns.tolist())
+    else:
+        st.write("No power zone data available for the selected athlete.")
 
     st.markdown("---")
     st.header("Nutrition Data")
