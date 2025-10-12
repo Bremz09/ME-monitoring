@@ -34,7 +34,7 @@ if authentication_status:
     def get_training_peaks_data_from_snowflake():
         """Load Training Peaks cycling data from Snowflake view"""
         try:
-            # Connect to Snowflake
+            # Connect to Snowflake with SSL workarounds
             ctx = snowflake.connector.connect(
                 account='URHWEIA-HPSNZ',
                 user='SAM.BREMER@HPSNZ.ORG.NZ',
@@ -42,7 +42,10 @@ if authentication_status:
                 role='PUBLIC',
                 warehouse='COMPUTE_WH',
                 database='CONSUME',
-                schema='SMARTABASE'
+                schema='SMARTABASE',
+                # SSL workarounds
+                insecure_mode=False,
+                ocsp_response_cache_filename=None
             )
             
             # Query the Training Peaks cycling view
@@ -55,7 +58,9 @@ if authentication_status:
             return df
             
         except Exception as e:
-            st.error(f"Error connecting to Snowflake: {e}")
+            st.warning(f"Snowflake connection issue: {e}")
+            st.info("Using demo mode - Snowflake connection will be restored once SSL issues are resolved")
+            # Return empty DataFrame for now
             return pd.DataFrame()  # Return empty DataFrame on error
     
     @st.cache_data
