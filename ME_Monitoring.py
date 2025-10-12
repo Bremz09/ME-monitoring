@@ -81,7 +81,7 @@ if authentication_status:
             engine ='openpyxl',
             sheet_name="Sheet1",
             skiprows=0,
-            usecols='A:J',
+            usecols='A:I',
             nrows=20000
             )
         name = athlete.split(" ")[0]+" "+athlete.split(" ")[1]
