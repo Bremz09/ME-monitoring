@@ -342,8 +342,20 @@ if authentication_status:
                 weekly_zones = df_zones_filtered.groupby(['Week_Start', 'Power Zone Label'])['Power Zone Minutes'].sum().reset_index()
                 weekly_zones['Power Zone Minutes'] = weekly_zones['Power Zone Minutes'].round(2)
                 
+                # Create mapping from Power Zone Label to power ranges
+                zone_mapping = df_zones_filtered.groupby('Power Zone Label').agg({
+                    'Power Zone Minimum': 'first',
+                    'Power Zone Maximum': 'first'
+                }).reset_index()
+                zone_mapping['Power Range'] = zone_mapping['Power Zone Minimum'].astype(str) + '-' + zone_mapping['Power Zone Maximum'].astype(str) + 'W'
+                zone_map_dict = dict(zip(zone_mapping['Power Zone Label'], zone_mapping['Power Range']))
+                
                 # Pivot to get zones as columns
                 weekly_pivot = weekly_zones.pivot(index='Week_Start', columns='Power Zone Label', values='Power Zone Minutes').fillna(0)
+                
+                # Sort columns by Power Zone Minimum to get lowest zones at bottom
+                zone_order = zone_mapping.sort_values('Power Zone Minimum')['Power Zone Label'].tolist()
+                weekly_pivot = weekly_pivot.reindex(columns=[col for col in zone_order if col in weekly_pivot.columns])
                 
                 # Create stacked bar chart for weekly view
                 fig_weekly = go.Figure()
@@ -351,13 +363,14 @@ if authentication_status:
                 colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#bcbd22', '#17becf']
                 
                 for i, zone in enumerate(weekly_pivot.columns):
+                    power_range = zone_map_dict.get(zone, zone)  # Use power range if available, otherwise fall back to zone label
                     fig_weekly.add_trace(go.Bar(
                         x=weekly_pivot.index,
                         y=weekly_pivot[zone],
-                        name=zone,
+                        name=power_range,
                         marker_color=colors[i % len(colors)],
                         hovertemplate="<b>Week Starting:</b> %{x}<br>" +
-                                    f"<b>Power Zone:</b> {zone}<br>" +
+                                    f"<b>Power Zone:</b> {power_range}<br>" +
                                     "<b>Time:</b> %{y:.2f} minutes<br>" +
                                     "<extra></extra>"
                     ))
@@ -385,15 +398,16 @@ if authentication_status:
                 for i, zone in enumerate(weekly_percentage.columns):
                     # Get corresponding absolute values for tooltip
                     absolute_values = weekly_pivot[zone]
+                    power_range = zone_map_dict.get(zone, zone)  # Use power range if available, otherwise fall back to zone label
                     
                     fig_percentage.add_trace(go.Bar(
                         x=weekly_percentage.index,
                         y=weekly_percentage[zone],
-                        name=zone,
+                        name=power_range,
                         marker_color=colors[i % len(colors)],
                         customdata=absolute_values,
                         hovertemplate="<b>Week Starting:</b> %{x}<br>" +
-                                    f"<b>Power Zone:</b> {zone}<br>" +
+                                    f"<b>Power Zone:</b> {power_range}<br>" +
                                     "<b>Percentage:</b> %{y:.1f}%<br>" +
                                     "<b>Total Time:</b> %{customdata:.2f} minutes<br>" +
                                     "<extra></extra>"
