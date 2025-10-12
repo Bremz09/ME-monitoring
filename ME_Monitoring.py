@@ -8,6 +8,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import snowflake.connector
 
 
 
@@ -19,35 +20,44 @@ st.set_page_config(page_title='ME Monitoring',
                   layout="wide")
 
 # --- USER AUTHENTICATION ---
-import streamlit_authenticator as stauth 
-import pickle
-# load hashed passwords
-with open("hashed_pw.pkl","rb") as file:
-    hashed_passwords = pickle.load(file)
+# Temporarily disabled authentication for testing
+# import streamlit_authenticator as stauth 
+# import pickle
 
-
-
-usernames = ['CNZ']
-names = ['CNZ']
-
-
-credentials = {"usernames":{}}
-        
-for uname,name,pwd in zip(usernames,names,hashed_passwords):
-    user_dict = {"name": name, "password": pwd}
-    credentials["usernames"].update({uname: user_dict})
-        
-authenticator = stauth.Authenticate(credentials, "CNZPD", "abcdef", cookie_expiry_days=30)
-
-name, authentication_status, username = authenticator.login("Login", "main")
-
-if authentication_status == False:
-    st.error("Username/password is incorrect")
-
-if authentication_status == None:
-    st.warning("Please enter your username and password")
+# For now, bypass authentication
+authentication_status = True
+name = "CNZ"
+username = "CNZ"
 
 if authentication_status:
+    @st.cache_data
+    def get_training_peaks_data_from_snowflake():
+        """Load Training Peaks cycling data from Snowflake view"""
+        try:
+            # Connect to Snowflake
+            ctx = snowflake.connector.connect(
+                account='URHWEIA-HPSNZ',
+                user='SAM.BREMER@HPSNZ.ORG.NZ',
+                authenticator='externalbrowser',
+                role='PUBLIC',
+                warehouse='COMPUTE_WH',
+                database='CONSUME',
+                schema='SMARTABASE'
+            )
+            
+            # Query the Training Peaks cycling view
+            query = "SELECT * FROM TRAINING_PEAKS_CYCLING_VW"
+            df = pd.read_sql(query, ctx)
+            
+            # Close connection
+            ctx.close()
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Error connecting to Snowflake: {e}")
+            return pd.DataFrame()  # Return empty DataFrame on error
+    
     @st.cache_data
     def get_nutrition_data_from_excel():
         df = pd.read_excel(
@@ -98,6 +108,15 @@ if authentication_status:
         weeks = st.slider("Select number of weeks to display", min_value=4, max_value=52, value=52, step=1)
     df_athlete_training = get_training_data_from_excel(athlete).dropna(axis=1, how='all')
     df_zones = get_power_zone_data_from_excel(athlete)
+    
+    # Load Training Peaks data from Snowflake
+    df_training_peaks = get_training_peaks_data_from_snowflake()
+    
+    # Filter Training Peaks data for selected athlete
+    if not df_training_peaks.empty:
+        df_athlete_training_peaks = df_training_peaks[df_training_peaks['USER_NAME_FIXED'] == athlete]
+    else:
+        df_athlete_training_peaks = pd.DataFrame()
     
 
     
@@ -392,6 +411,10 @@ if authentication_status:
                 weekly_totals = weekly_pivot.sum(axis=1)
                 weekly_percentage = weekly_pivot.div(weekly_totals, axis=0) * 100
                 
+                # Sort columns by Power Zone Minimum to get lowest zones at bottom
+                zone_order = zone_mapping.sort_values('Power Zone Minimum')['Power Zone Label'].tolist()
+                weekly_percentage = weekly_percentage.reindex(columns=[col for col in zone_order if col in weekly_percentage.columns])
+                
                 # Create percentage stacked bar chart
                 fig_percentage = go.Figure()
                 
@@ -442,3 +465,72 @@ if authentication_status:
     fig = px.line(df_athlete_nutrition.loc[df_athlete_nutrition['Theme of Consult']=='Hydration'], x='Date', y=['Hydration status (USG)'], markers=True)
     fig.update_layout(title=f'Hydration status for {athlete}', xaxis_title='Date', yaxis_title='USG')
     st.plotly_chart(fig, use_container_width=True)
+
+    # Training Peaks Data Section
+    st.markdown("---")
+    st.header("Training Peaks Data")
+    
+    if not df_athlete_training_peaks.empty:
+        st.subheader(f"Training Peaks Summary for {athlete}")
+        
+        # Display basic statistics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_sessions = len(df_athlete_training_peaks)
+            st.metric("Total Sessions", total_sessions)
+        
+        with col2:
+            if 'TOTAL_TIME' in df_athlete_training_peaks.columns:
+                total_hours = df_athlete_training_peaks['TOTAL_TIME'].sum() / 3600  # Convert seconds to hours
+                st.metric("Total Hours", f"{total_hours:.1f}")
+        
+        with col3:
+            if 'DISTANCE' in df_athlete_training_peaks.columns:
+                total_distance = df_athlete_training_peaks['DISTANCE'].sum() / 1000  # Convert to km
+                st.metric("Total Distance (km)", f"{total_distance:.1f}")
+        
+        with col4:
+            if 'TSS' in df_athlete_training_peaks.columns:
+                total_tss = df_athlete_training_peaks['TSS'].sum()
+                st.metric("Total TSS", f"{total_tss:.0f}")
+        
+        # Display data table with key columns
+        st.subheader("Recent Training Sessions")
+        display_columns = []
+        
+        # Check which columns exist and add them to display
+        available_columns = df_athlete_training_peaks.columns.tolist()
+        key_columns = ['START_TIME', 'TITLE', 'WORKOUT_TYPE', 'TOTAL_TIME', 'DISTANCE', 
+                      'POWER_AVERAGE', 'POWER_MAXIMUM', 'HEART_RATE_AVERAGE', 'TSS', 'RPE']
+        
+        for col in key_columns:
+            if col in available_columns:
+                display_columns.append(col)
+        
+        if display_columns:
+            # Sort by start time and show recent sessions
+            df_display = df_athlete_training_peaks.copy()
+            if 'START_TIME' in df_display.columns:
+                df_display = df_display.sort_values('START_TIME', ascending=False)
+            
+            # Show top 20 sessions
+            st.dataframe(df_display[display_columns].head(20), use_container_width=True)
+        
+        # Show all available columns for reference
+        st.subheader("Available Data Columns")
+        st.write("The following columns are available in the Training Peaks dataset:")
+        cols_per_row = 4
+        for i in range(0, len(available_columns), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j, col_name in enumerate(available_columns[i:i+cols_per_row]):
+                with cols[j]:
+                    st.write(f"• {col_name}")
+    
+    else:
+        st.write(f"No Training Peaks data available for {athlete}")
+        if df_training_peaks.empty:
+            st.write("Could not connect to Snowflake or view is empty.")
+        else:
+            available_athletes = df_training_peaks['USER_NAME_FIXED'].unique() if 'USER_NAME_FIXED' in df_training_peaks.columns else []
+            st.write(f"Available athletes in Training Peaks data: {', '.join(available_athletes)}")
