@@ -21,7 +21,6 @@ name = "CNZ"
 username = "CNZ"
 
 if authentication_status:
-    @st.cache_data
     def get_training_peaks_data():
         """Load Training Peaks data from CSV file (updated nightly from Snowflake)"""
         
@@ -555,7 +554,6 @@ name = "CNZ"
 username = "CNZ"
 
 if authentication_status:
-    @st.cache_data
     def get_training_peaks_data_from_snowflake():
         """Load Training Peaks cycling data from Snowflake view"""
         try:
@@ -588,7 +586,6 @@ if authentication_status:
             # Return empty DataFrame for now
             return pd.DataFrame()  # Return empty DataFrame on error
     
-    @st.cache_data
     def get_nutrition_data_from_excel():
         df = pd.read_excel(
             io='pages/ME_Monitoring/ME_Nutrition.xlsx',
@@ -600,7 +597,6 @@ if authentication_status:
             )
         return df
     
-    @st.cache_data
     def get_training_data_from_excel(athlete):
         df = pd.read_excel(
             io='pages/ME_Monitoring/ME_Training.xlsx',
@@ -614,7 +610,6 @@ if authentication_status:
     
     df_nutrition = get_nutrition_data_from_excel()
 
-    @st.cache_data
     def get_power_zone_data_from_excel(athlete):
         df = pd.read_excel(
             io='pages/ME_Monitoring/ME_Power_Zones.xlsx',
