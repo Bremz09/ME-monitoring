@@ -15,12 +15,142 @@ st.set_page_config(page_title='ME Monitoring - Snowflake Edition',
                   page_icon=":chart_with_upwards_trend:",
                   layout="wide")
 
-# Bypass authentication for testing
-authentication_status = True
-name = "CNZ"
-username = "CNZ"
+# Define cached functions outside authentication block to avoid tokenization errors
+@st.cache_data
+def get_training_peaks_data():
+    """Load Training Peaks data from CSV file (updated nightly from Snowflake)"""
+    
+    try:
+        # Try to load from CSV file
+        csv_path = 'data/training_peaks_data.csv'
+        
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            
+            # Load metadata if available
+            metadata_path = 'data/metadata.json'
+            if os.path.exists(metadata_path):
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                
+                # Display data freshness info
+                last_updated = datetime.fromisoformat(metadata['last_updated'])
+                time_diff = datetime.now() - last_updated
+                
+                if time_diff.total_seconds() < 3600:  # Less than 1 hour
+                    freshness_color = "🟢"
+                elif time_diff.total_seconds() < 86400:  # Less than 24 hours
+                    freshness_color = "🟡"
+                else:  # More than 24 hours
+                    freshness_color = "🔴"
+                
+                st.sidebar.markdown(f"""
+                **Data Freshness** {freshness_color}
+                
+                📅 **Last Updated**: {last_updated.strftime('%Y-%m-%d %H:%M')}
+                
+                📊 **Records**: {metadata['record_count']:,}
+                
+                👥 **Athletes**: {len(metadata['athletes'])}
+                
+                📈 **Date Range**: 
+                {metadata['date_range_start'][:10] if metadata['date_range_start'] else 'N/A'} to 
+                {metadata['date_range_end'][:10] if metadata['date_range_end'] else 'N/A'}
+                """)
+            
+            return df
+        
+        else:
+            st.error("❌ Training data file not found!")
+            st.markdown("""
+            **Data File Missing**
+            
+            The training data file (`data/training_peaks_data.csv`) was not found. This could mean:
+            
+            1. 🔄 **First deployment** - Data hasn't been extracted yet
+            2. 📁 **File path issue** - Data file is in wrong location  
+            3. ⏰ **Extraction pending** - Automated extraction hasn't run
+            
+            **Next Steps:**
+            - Run `extract_data.py` manually to create initial data file
+            - Check that automated extraction is scheduled correctly
+            - Verify file paths in deployment environment
+            """)
+            
+            return pd.DataFrame()
+            
+    except Exception as e:
+        st.error(f"Error loading training data: {e}")
+        return pd.DataFrame()
 
-if authentication_status:
+@st.cache_data
+def get_training_peaks_data_from_snowflake():
+    """Load Training Peaks cycling data from Snowflake view"""
+    try:
+        # Connect to Snowflake with SSL workarounds
+        ctx = snowflake.connector.connect(
+            account='URHWEIA-HPSNZ',
+            user='SAM.BREMER@HPSNZ.ORG.NZ',
+            authenticator='externalbrowser',
+            role='PUBLIC',
+            warehouse='COMPUTE_WH',
+            database='CONSUME',
+            schema='SMARTABASE',
+            client_session_keep_alive=True,
+            login_timeout=300,
+            network_timeout=300,
+            socket_timeout=300,
+            ocsp_response_cache_filename=None
+        )
+        
+        # Query the Training Peaks cycling view
+        query = "SELECT * FROM TRAINING_PEAKS_CYCLING_VW ORDER BY START_TIME"
+        df = pd.read_sql(query, ctx)
+        
+        ctx.close()
+        return df
+        
+    except Exception as e:
+        st.error(f"Error connecting to Snowflake: {e}")
+        return pd.DataFrame()
+
+@st.cache_data
+def get_nutrition_data_from_excel():
+    df = pd.read_excel(
+        io='pages/ME_Monitoring/ME_Nutrition.xlsx',
+        engine ='openpyxl',
+        sheet_name='Master',
+        skiprows=0,
+        usecols='A:E',
+        nrows=500
+    )
+    return df
+
+@st.cache_data
+def get_training_data_from_excel(athlete):
+    df = pd.read_excel(
+        io='pages/ME_Monitoring/ME_Training.xlsx',
+        engine ='openpyxl',
+        sheet_name=athlete.split(" ")[0],
+        skiprows=0,
+        usecols='A:BK',
+        nrows=500
+    )
+    return df
+
+@st.cache_data
+def get_power_zone_data_from_excel(athlete):
+    df = pd.read_excel(
+        io='pages/ME_Monitoring/ME_Power_Zones.xlsx',
+        engine ='openpyxl',
+        sheet_name="Sheet1",
+        skiprows=0,
+        usecols='A:I',
+        nrows=500
+    )
+    # Filter for the selected athlete
+    df_athlete = df[df['Athlete'] == athlete]
+    return df_athlete
     def get_training_peaks_data():
         """Load Training Peaks data from CSV file (updated nightly from Snowflake)"""
         
@@ -89,7 +219,7 @@ if authentication_status:
             return pd.DataFrame()
 
     def process_training_data(df, athlete, weeks):
-        """Process Training Peaks data to create training metrics similar to Excel version"""
+        """Process Training Peaks data to create weekly training metrics"""
         
         # Filter for selected athlete
         df_athlete = df[df['USER_NAME_FIXED'] == athlete].copy()
@@ -100,6 +230,7 @@ if authentication_status:
         # Convert dates and times
         df_athlete['START_TIME'] = pd.to_datetime(df_athlete['START_TIME'])
         df_athlete['Date'] = df_athlete['START_TIME'].dt.date
+        df_athlete['Date'] = pd.to_datetime(df_athlete['Date'])
         
         # Convert TOTAL_TIME from seconds to hours
         df_athlete['Hours'] = df_athlete['TOTAL_TIME'] / 3600
@@ -107,40 +238,45 @@ if authentication_status:
         # Convert ENERGY from joules to kJ
         df_athlete['kJ'] = df_athlete['ENERGY'] / 1000
         
-        # Group by date to get daily totals
-        daily_data = df_athlete.groupby('Date').agg({
+        # Create week starting Monday (Monday = 0 in week calculation)
+        # Get the start of the week (Monday) for each date
+        df_athlete['Week_Start'] = df_athlete['Date'] - pd.to_timedelta(df_athlete['Date'].dt.dayofweek, unit='D')
+        
+        # Group by week to get weekly totals
+        weekly_data = df_athlete.groupby('Week_Start').agg({
             'Hours': 'sum',
-            'TSS': 'sum',
+            'TSS': 'sum', 
             'kJ': 'sum',
             'DISTANCE': 'sum'
         }).reset_index()
         
-        # Convert Date back to datetime for calculations
-        daily_data['Date'] = pd.to_datetime(daily_data['Date'])
+        # Sort by week start date
+        weekly_data = weekly_data.sort_values('Week_Start')
         
-        # Sort by date
-        daily_data = daily_data.sort_values('Date')
-        
-        # Calculate rolling metrics
-        daily_data['4_Wk_Hours'] = daily_data['Hours'].rolling(window=28, min_periods=1).mean()
-        daily_data['8_Wk_Weighted_H'] = daily_data['Hours'].rolling(window=56, min_periods=1).mean()
-        daily_data['8_Wk_Log_H'] = daily_data['Hours'].rolling(window=56, min_periods=1).apply(lambda x: np.log(x.mean() + 1) if x.mean() > 0 else 0)
+        # Calculate rolling metrics (using weeks instead of days)
+        weekly_data['4_Wk_Hours'] = weekly_data['Hours'].rolling(window=4, min_periods=1).mean()
+        weekly_data['8_Wk_Weighted_H'] = weekly_data['Hours'].rolling(window=8, min_periods=1).mean()
+        weekly_data['8_Wk_Log_H'] = weekly_data['Hours'].rolling(window=8, min_periods=1).apply(lambda x: np.log(x.mean() + 1) if x.mean() > 0 else 0)
         
         # Calculate TSS rolling metrics
-        daily_data['4_Wk_TSS'] = daily_data['TSS'].rolling(window=28, min_periods=1).mean()
-        daily_data['8_Wk_Weighted_TSS'] = daily_data['TSS'].rolling(window=56, min_periods=1).mean()
+        weekly_data['4_Wk_TSS'] = weekly_data['TSS'].rolling(window=4, min_periods=1).mean()
+        weekly_data['8_Wk_Weighted_TSS'] = weekly_data['TSS'].rolling(window=8, min_periods=1).mean()
         
         # Calculate kJ rolling metrics  
-        daily_data['4_Wk_kJ'] = daily_data['kJ'].rolling(window=28, min_periods=1).mean()
-        daily_data['8_Wk_Weighted_kJ'] = daily_data['kJ'].rolling(window=56, min_periods=1).mean()
+        weekly_data['4_Wk_kJ'] = weekly_data['kJ'].rolling(window=4, min_periods=1).mean()
+        weekly_data['8_Wk_Weighted_kJ'] = weekly_data['kJ'].rolling(window=8, min_periods=1).mean()
         
-        # Add week number for tooltip
-        daily_data['Week'] = daily_data['Date'].dt.isocalendar().week
+        # Add week end date for better labeling
+        weekly_data['Week_End'] = weekly_data['Week_Start'] + pd.Timedelta(days=6)
+        
+        # Create week label (e.g., "Oct 7-13" or "Week 41")
+        weekly_data['Week_Label'] = weekly_data.apply(lambda row: 
+            f"{row['Week_Start'].strftime('%b %d')}-{row['Week_End'].strftime('%d')}", axis=1)
         
         # Get last N weeks
-        daily_data = daily_data.tail(weeks * 7)  # Approximate weeks to days
+        weekly_data = weekly_data.tail(weeks)
         
-        return daily_data
+        return weekly_data
 
     def process_power_zone_data(df, athlete):
         """Process power zone data from Training Peaks"""
@@ -215,62 +351,58 @@ if authentication_status:
     # Hours Chart
     fig = go.Figure()
     
-    # Add bars for daily hours
+    # Add bars for weekly hours
     fig.add_trace(go.Bar(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["Hours"],
-        name="Daily Hours",
+        name="Weekly Hours",
         marker_color="lightblue",
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
-                     "<b>Hours:</b> %{y:.2f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
+                     "<b>Total Hours:</b> %{y:.2f}<br>" +
                      "<extra></extra>"
     ))
     
     # Add rolling averages
     fig.add_trace(go.Scatter(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["4_Wk_Hours"],
         mode="lines+markers",
         name="4 Wk Average",
         line=dict(color="orange", width=2),
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
                      "<b>4 Wk Avg:</b> %{y:.2f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
                      "<extra></extra>"
     ))
     
     fig.add_trace(go.Scatter(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["8_Wk_Weighted_H"],
         mode="lines+markers",
         name="8 Wk Weighted",
         line=dict(color="red", width=2),
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
                      "<b>8 Wk Weighted:</b> %{y:.2f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
                      "<extra></extra>"
     ))
     
     fig.add_trace(go.Scatter(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["8_Wk_Log_H"],
         mode="lines+markers",
         name="8 Wk Log",
         line=dict(color="green", width=2),
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
                      "<b>8 Wk Log:</b> %{y:.2f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
                      "<extra></extra>"
     ))
     
     fig.update_layout(
-        title=f"Bike Hours and Rolling Metrics (Last {weeks} weeks) - {athlete}",
-        xaxis_title="Date",
+        title=f"Weekly Bike Hours and Rolling Metrics (Last {weeks} weeks) - {athlete}",
+        xaxis_title="Week",
         yaxis_title="Hours",
         hovermode="x unified"
     )
@@ -282,49 +414,46 @@ if authentication_status:
     
     fig_tss = go.Figure()
     
-    # Add bars for daily TSS
+    # Add bars for weekly TSS
     fig_tss.add_trace(go.Bar(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["TSS"],
-        name="Daily TSS",
+        name="Weekly TSS",
         marker_color="lightcoral",
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
-                     "<b>TSS:</b> %{y:.0f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
+                     "<b>Total TSS:</b> %{y:.0f}<br>" +
                      "<extra></extra>"
     ))
     
     # Add rolling averages
     fig_tss.add_trace(go.Scatter(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["4_Wk_TSS"],
         mode="lines+markers",
         name="4 Wk Average",
         line=dict(color="orange", width=2),
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
                      "<b>4 Wk Avg TSS:</b> %{y:.0f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
                      "<extra></extra>"
     ))
     
     fig_tss.add_trace(go.Scatter(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["8_Wk_Weighted_TSS"],
         mode="lines+markers",
         name="8 Wk Weighted",
         line=dict(color="red", width=2),
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
                      "<b>8 Wk Weighted TSS:</b> %{y:.0f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
                      "<extra></extra>"
     ))
     
     fig_tss.update_layout(
-        title=f"TSS and Rolling Metrics (Last {weeks} weeks) - {athlete}",
-        xaxis_title="Date",
+        title=f"Weekly TSS and Rolling Metrics (Last {weeks} weeks) - {athlete}",
+        xaxis_title="Week",
         yaxis_title="TSS",
         hovermode="x unified"
     )
@@ -336,49 +465,46 @@ if authentication_status:
     
     fig_kj = go.Figure()
     
-    # Add bars for daily kJ
+    # Add bars for weekly kJ
     fig_kj.add_trace(go.Bar(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["kJ"],
-        name="Daily kJ",
+        name="Weekly kJ",
         marker_color="lightgreen",
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
-                     "<b>kJ:</b> %{y:.0f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
+                     "<b>Total kJ:</b> %{y:.0f}<br>" +
                      "<extra></extra>"
     ))
     
     # Add rolling averages
     fig_kj.add_trace(go.Scatter(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["4_Wk_kJ"],
         mode="lines+markers",
         name="4 Wk Average",
         line=dict(color="orange", width=2),
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
                      "<b>4 Wk Avg kJ:</b> %{y:.0f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
                      "<extra></extra>"
     ))
     
     fig_kj.add_trace(go.Scatter(
-        x=df_processed["Date"],
+        x=df_processed["Week_Start"],
         y=df_processed["8_Wk_Weighted_kJ"],
         mode="lines+markers",
         name="8 Wk Weighted",
         line=dict(color="red", width=2),
-        customdata=df_processed["Week"],
-        hovertemplate="<b>Date:</b> %{x}<br>" +
+        customdata=df_processed["Week_Label"],
+        hovertemplate="<b>Week:</b> %{customdata}<br>" +
                      "<b>8 Wk Weighted kJ:</b> %{y:.0f}<br>" +
-                     "<b>Week:</b> %{customdata}<br>" +
                      "<extra></extra>"
     ))
     
     fig_kj.update_layout(
-        title=f"kJ and Rolling Metrics (Last {weeks} weeks) - {athlete}",
-        xaxis_title="Date",
+        title=f"Weekly kJ and Rolling Metrics (Last {weeks} weeks) - {athlete}",
+        xaxis_title="Week",
         yaxis_title="kJ",
         hovermode="x unified"
     )
@@ -530,10 +656,6 @@ if authentication_status:
     else:
         st.write("No session data available to display")
 
-else:
-    st.write("Please log in to access the dashboard")
-import snowflake.connector
-
 
 
 
@@ -545,10 +667,7 @@ st.set_page_config(page_title='ME Monitoring',
 
 # --- USER AUTHENTICATION ---
 # Temporarily disabled authentication for testing
-# import streamlit_authenticator as stauth 
-# import pickle
-
-# For now, bypass authentication
+# Bypass authentication for testing
 authentication_status = True
 name = "CNZ"
 username = "CNZ"
