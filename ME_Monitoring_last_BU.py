@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-
-
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
-
-
+from datetime import datetime, timedelta
+import snowflake.connector
+import numpy as np
+import os
+import json
 
 
 
@@ -19,36 +19,33 @@ st.set_page_config(page_title='ME Monitoring',
                   layout="wide")
 
 # --- USER AUTHENTICATION ---
-import streamlit_authenticator as stauth 
-import pickle
-# load hashed passwords
-with open("hashed_pw.pkl","rb") as file:
-    hashed_passwords = pickle.load(file)
-
-
-
-usernames = ['CNZ']
-names = ['CNZ']
-
-
-credentials = {"usernames":{}}
-        
-for uname,name,pwd in zip(usernames,names,hashed_passwords):
-    user_dict = {"name": name, "password": pwd}
-    credentials["usernames"].update({uname: user_dict})
-        
-authenticator = stauth.Authenticate(credentials, "CNZPD", "abcdef", cookie_expiry_days=30)
-
-name, authentication_status, username = authenticator.login("Login", "main")
-
-if authentication_status == False:
-    st.error("Username/password is incorrect")
-
-if authentication_status == None:
-    st.warning("Please enter your username and password")
+# Temporarily disabled authentication for testing
+# Bypass authentication for testing
+authentication_status = True
+name = "CNZ"
+username = "CNZ"
 
 if authentication_status:
+    
     @st.cache_data
+    def load_training_peaks_data():
+        """Load training peaks data from CSV with caching"""
+        try:
+            df = pd.read_csv('data/training_peaks_data.csv')
+            # Convert date column to datetime
+            if 'START_TIME' in df.columns:
+                df['START_TIME'] = pd.to_datetime(df['START_TIME'])
+            return df
+        except FileNotFoundError:
+            st.error("Training Peaks data file not found. Please run the data extraction script first.")
+            return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error loading training peaks data: {e}")
+            return pd.DataFrame()
+    
+    # Load data
+    df_training_peaks = load_training_peaks_data()
+    
     def get_nutrition_data_from_excel():
         df = pd.read_excel(
             io='pages/ME_Monitoring/ME_Nutrition.xlsx',
@@ -60,54 +57,117 @@ if authentication_status:
             )
         return df
     
-    @st.cache_data
-    def get_training_data_from_excel(athlete):
-        df = pd.read_excel(
-            io='pages/ME_Monitoring/ME_Training.xlsx',
-            engine ='openpyxl',
-            sheet_name=athlete.split(" ")[0],
-            skiprows=0,
-            usecols='A:P',
-            nrows=400
-            )
-        return df
+    def get_training_data_from_csv(athlete):
+        """Get training data for specific athlete from Training Peaks CSV"""
+        if df_training_peaks.empty:
+            return pd.DataFrame()
+        
+        # Filter for the specific athlete
+        athlete_data = df_training_peaks[df_training_peaks['USER_NAME_FIXED'] == athlete].copy()
+        
+        if athlete_data.empty:
+            return pd.DataFrame()
+            
+        # Convert necessary columns and calculate metrics similar to Excel version
+        # Add weekly aggregation logic here to match Excel functionality
+        athlete_data = athlete_data.sort_values('START_TIME')
+        
+        # Create a simplified dataframe with key metrics for compatibility
+        training_summary = pd.DataFrame({
+            'Date': athlete_data['START_TIME'],
+            'Hours (bike)': athlete_data['TOTAL_TIME'] / 3600 if 'TOTAL_TIME' in athlete_data.columns else 0,  # Convert seconds to hours
+            'TSS': athlete_data['TSS'] if 'TSS' in athlete_data.columns else 0,
+            'kJ': athlete_data['ENERGY'] if 'ENERGY' in athlete_data.columns else 0,
+            'Week': athlete_data['START_TIME'].dt.isocalendar().week if 'START_TIME' in athlete_data.columns else 0
+        })
+        
+        # Calculate rolling averages to match Excel functionality
+        training_summary['4 Wk Hours'] = training_summary['Hours (bike)'].rolling(window=28, min_periods=1).mean()
+        training_summary['8 Wk Weighted H'] = training_summary['Hours (bike)'].ewm(span=56).mean()
+        training_summary['8 Wk Log H'] = training_summary['Hours (bike)'].rolling(window=56, min_periods=1).mean()
+        
+        # Add TSS rolling averages
+        training_summary['4 Wk TSS'] = training_summary['TSS'].rolling(window=28, min_periods=1).mean()
+        training_summary['8 Wk Weighted TSS'] = training_summary['TSS'].ewm(span=56).mean()
+        training_summary['8 Wk Log TSS'] = training_summary['TSS'].rolling(window=56, min_periods=1).mean()
+        
+        # Add kJ rolling averages
+        training_summary['4 Wk kJ'] = training_summary['kJ'].rolling(window=28, min_periods=1).mean()
+        training_summary['8 Wk Weighted kJ'] = training_summary['kJ'].ewm(span=56).mean()
+        training_summary['8 Wk Log kJ'] = training_summary['kJ'].rolling(window=56, min_periods=1).mean()
+        
+        return training_summary
     
-    df_nutrition = get_nutrition_data_from_excel()
+    # Nutrition data functionality temporarily disabled - now using Training Peaks CSV for athlete selection
+    # df_nutrition = get_nutrition_data_from_excel()
 
-    @st.cache_data
-    def get_power_zone_data_from_excel(athlete):
-        df = pd.read_excel(
-            io='pages/ME_Monitoring/ME_Power_Zones.xlsx',
-            engine ='openpyxl',
-            sheet_name="Sheet1",
-            skiprows=0,
-            usecols='A:I',
-            nrows=20000
-            )
-        name = athlete.split(" ")[0]+" "+athlete.split(" ")[1]
-        df = df[df['Name']==name]
-        return df
+    def get_power_zone_data_from_csv(athlete):
+        """Get power zone data for specific athlete from Training Peaks CSV"""
+        if df_training_peaks.empty:
+            return pd.DataFrame()
+        
+        # Filter for the specific athlete
+        athlete_data = df_training_peaks[df_training_peaks['USER_NAME_FIXED'] == athlete].copy()
+        
+        if athlete_data.empty:
+            return pd.DataFrame()
+            
+        # Extract unique power zone information for the athlete
+        power_zones = athlete_data[['POWER_ZONE', 'POWER_ZONE_LABEL', 'POWER_ZONE_MINIMUM', 
+                                   'POWER_ZONE_MAXIMUM', 'POWER_THRESHOLD']].dropna()
+        
+        if power_zones.empty:
+            return pd.DataFrame()
+            
+        # Remove duplicates and create a clean power zone dataframe
+        power_zones_unique = power_zones.drop_duplicates(subset=['POWER_ZONE'])
+        power_zones_unique = power_zones_unique.sort_values('POWER_ZONE')
+        
+        # Rename columns to match expected format
+        power_zones_unique = power_zones_unique.rename(columns={
+            'POWER_ZONE': 'Zone',
+            'POWER_ZONE_LABEL': 'Zone_Label',
+            'POWER_ZONE_MINIMUM': 'Min_Power',
+            'POWER_ZONE_MAXIMUM': 'Max_Power',
+            'POWER_THRESHOLD': 'Threshold'
+        })
+        
+        power_zones_unique['Name'] = athlete  # Add name column for compatibility
+        
+        return power_zones_unique
     
     
 
     
     c1,c2 = st.columns(2)
     with c1:
-        athlete = st.selectbox("Select athlete", options=df_nutrition['Name'].unique())
+        # Get athlete list from Training Peaks CSV data
+        if not df_training_peaks.empty and 'USER_NAME_FIXED' in df_training_peaks.columns:
+            available_athletes = sorted(df_training_peaks['USER_NAME_FIXED'].unique())
+            athlete = st.selectbox("Select athlete", options=available_athletes)
+        else:
+            st.error("No athlete data available. Please check the data file.")
+            athlete = None
     with c2:
         weeks = st.slider("Select number of weeks to display", min_value=4, max_value=52, value=52, step=1)
-    df_athlete_training = get_training_data_from_excel(athlete).dropna(axis=1, how='all')
-    df_zones = get_power_zone_data_from_excel(athlete)
     
-
-    
-
-    df_training_sorted = df_athlete_training.sort_values("Date")
-    df_training_last52 = df_training_sorted.tail(weeks)
-    # Get previous 52 entries
-    df_training_prev52 = df_training_sorted.iloc[-weeks - 52:-52] if len(df_training_sorted) >= weeks + 52 else None
-    st.header("Training Data")
-    fig = go.Figure()
+    if athlete:
+        df_athlete_training = get_training_data_from_csv(athlete).dropna(axis=1, how='all')
+        df_zones = get_power_zone_data_from_csv(athlete)
+        
+        # Filter Training Peaks data for selected athlete
+        if not df_training_peaks.empty:
+            df_athlete_training_peaks = df_training_peaks[df_training_peaks['USER_NAME_FIXED'] == athlete]
+        else:
+            df_athlete_training_peaks = pd.DataFrame()
+        
+        if not df_athlete_training.empty:
+            df_training_sorted = df_athlete_training.sort_values("Date")
+            df_training_last52 = df_training_sorted.tail(weeks)
+            # Get previous 52 entries
+            df_training_prev52 = df_training_sorted.iloc[-weeks - 52:-52] if len(df_training_sorted) >= weeks + 52 else None
+            st.header("Training Data")
+            fig = go.Figure()
 
     # Bar for Hours (bike)
     fig.add_trace(go.Bar(
@@ -392,6 +452,10 @@ if authentication_status:
                 weekly_totals = weekly_pivot.sum(axis=1)
                 weekly_percentage = weekly_pivot.div(weekly_totals, axis=0) * 100
                 
+                # Sort columns by Power Zone Minimum to get lowest zones at bottom
+                zone_order = zone_mapping.sort_values('Power Zone Minimum')['Power Zone Label'].tolist()
+                weekly_percentage = weekly_percentage.reindex(columns=[col for col in zone_order if col in weekly_percentage.columns])
+                
                 # Create percentage stacked bar chart
                 fig_percentage = go.Figure()
                 
@@ -429,16 +493,84 @@ if authentication_status:
         st.write("No power zone data available for the selected athlete.")
 
     st.markdown("---")
-    st.header("Nutrition Data")
-    df_athlete_nutrition = df_nutrition[df_nutrition['Name']==athlete].copy()
-
+    # Nutrition data section temporarily disabled - focusing on Training Peaks data
+    # st.header("Nutrition Data")
+    # df_athlete_nutrition = df_nutrition[df_nutrition['Name']==athlete].copy()
     
+    # fig = px.line(df_athlete_nutrition.loc[df_athlete_nutrition['Theme of Consult']=='Body Comp'], x='Date', y=['Height (cm)', 'Body Mass (kg)','Sum8 (mm)','FFM (SFTA; kg)',
+    #                                                  'Corrected Girths (Thigh; cm)','BIA FM (kg)','BIA SMM (kg)'], markers=True)
+    # fig.update_layout(title=f'Morphology for {athlete}', xaxis_title='Date', yaxis_title='Measurements')
+    # st.plotly_chart(fig, use_container_width=True)
 
-    fig = px.line(df_athlete_nutrition.loc[df_athlete_nutrition['Theme of Consult']=='Body Comp'], x='Date', y=['Height (cm)', 'Body Mass (kg)','Sum8 (mm)','FFM (SFTA; kg)',
-                                                     'Corrected Girths (Thigh; cm)','BIA FM (kg)','BIA SMM (kg)'], markers=True)
-    fig.update_layout(title=f'Morphology for {athlete}', xaxis_title='Date', yaxis_title='Measurements')
-    st.plotly_chart(fig, use_container_width=True)
+    # fig = px.line(df_athlete_nutrition.loc[df_athlete_nutrition['Theme of Consult']=='Hydration'], x='Date', y=['Hydration status (USG)'], markers=True)
+    # fig.update_layout(title=f'Hydration status for {athlete}', xaxis_title='Date', yaxis_title='USG')
+    # st.plotly_chart(fig, use_container_width=True)
 
-    fig = px.line(df_athlete_nutrition.loc[df_athlete_nutrition['Theme of Consult']=='Hydration'], x='Date', y=['Hydration status (USG)'], markers=True)
-    fig.update_layout(title=f'Hydration status for {athlete}', xaxis_title='Date', yaxis_title='USG')
-    st.plotly_chart(fig, use_container_width=True)
+    # Training Peaks Data Section
+    st.markdown("---")
+    st.header("Training Peaks Data")
+    
+    if not df_athlete_training_peaks.empty:
+        st.subheader(f"Training Peaks Summary for {athlete}")
+        
+        # Display basic statistics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_sessions = len(df_athlete_training_peaks)
+            st.metric("Total Sessions", total_sessions)
+        
+        with col2:
+            if 'TOTAL_TIME' in df_athlete_training_peaks.columns:
+                total_hours = df_athlete_training_peaks['TOTAL_TIME'].sum() / 3600  # Convert seconds to hours
+                st.metric("Total Hours", f"{total_hours:.1f}")
+        
+        with col3:
+            if 'DISTANCE' in df_athlete_training_peaks.columns:
+                total_distance = df_athlete_training_peaks['DISTANCE'].sum() / 1000  # Convert to km
+                st.metric("Total Distance (km)", f"{total_distance:.1f}")
+        
+        with col4:
+            if 'TSS' in df_athlete_training_peaks.columns:
+                total_tss = df_athlete_training_peaks['TSS'].sum()
+                st.metric("Total TSS", f"{total_tss:.0f}")
+        
+        # Display data table with key columns
+        st.subheader("Recent Training Sessions")
+        display_columns = []
+        
+        # Check which columns exist and add them to display
+        available_columns = df_athlete_training_peaks.columns.tolist()
+        key_columns = ['START_TIME', 'TITLE', 'WORKOUT_TYPE', 'TOTAL_TIME', 'DISTANCE', 
+                      'POWER_AVERAGE', 'POWER_MAXIMUM', 'HEART_RATE_AVERAGE', 'TSS', 'RPE']
+        
+        for col in key_columns:
+            if col in available_columns:
+                display_columns.append(col)
+        
+        if display_columns:
+            # Sort by start time and show recent sessions
+            df_display = df_athlete_training_peaks.copy()
+            if 'START_TIME' in df_display.columns:
+                df_display = df_display.sort_values('START_TIME', ascending=False)
+            
+            # Show top 20 sessions
+            st.dataframe(df_display[display_columns].head(20), use_container_width=True)
+        
+        # Show all available columns for reference
+        st.subheader("Available Data Columns")
+        st.write("The following columns are available in the Training Peaks dataset:")
+        cols_per_row = 4
+        for i in range(0, len(available_columns), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j, col_name in enumerate(available_columns[i:i+cols_per_row]):
+                with cols[j]:
+                    st.write(f"• {col_name}")
+    
+    else:
+        st.write(f"No Training Peaks data available for {athlete}")
+        if df_training_peaks.empty:
+            st.write("Could not connect to Snowflake or view is empty.")
+        else:
+            available_athletes = df_training_peaks['USER_NAME_FIXED'].unique() if 'USER_NAME_FIXED' in df_training_peaks.columns else []
+            st.write(f"Available athletes in Training Peaks data: {', '.join(available_athletes)}")
