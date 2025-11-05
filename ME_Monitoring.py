@@ -59,19 +59,112 @@ if authentication_status:
     
     @st.cache_data
     def load_training_peaks_data():
-        """Load training peaks data from CSV with caching"""
+        """Load training peaks data from Snowflake with caching"""
         try:
-            df = pd.read_csv('data/training_peaks_data.csv')
+            st.info("Connecting to Snowflake with Azure AD authentication...")
+            
+            # Snowflake connection parameters for Azure AD
+            conn = snowflake.connector.connect(
+                account=st.secrets["snowflake"]["account"],
+                user=st.secrets["snowflake"]["user"],
+                authenticator=st.secrets["snowflake"]["authenticator"],  # externalbrowser for Azure AD
+                role=st.secrets["snowflake"]["role"],
+                warehouse=st.secrets["snowflake"]["warehouse"],
+                database=st.secrets["snowflake"]["database"],
+                schema=st.secrets["snowflake"]["schema"]
+            )
+            
+            st.success("Connected to Snowflake successfully!")
+            
+            # First, let's explore the schema to find tables
+            cursor = conn.cursor()
+            
+            # List all tables in the current schema
+            try:
+                cursor.execute("SHOW TABLES")
+                all_tables = cursor.fetchall()
+                table_names = [table[1] for table in all_tables]
+                st.write(f"Available tables in {st.secrets['snowflake']['database']}.{st.secrets['snowflake']['schema']}:")
+                st.write(table_names)
+            except Exception as table_error:
+                st.warning(f"Could not list tables: {table_error}")
+                table_names = []
+            
+            # Try to find training peaks related tables
+            training_tables = [name for name in table_names if any(keyword in name.upper() for keyword in ['TRAINING', 'PEAKS', 'TP', 'EXERCISE', 'WORKOUT'])]
+            
+            if training_tables:
+                st.write("Found potential training-related tables:", training_tables)
+            
+            # Try different possible table names (prioritize the known correct table)
+            possible_tables = [
+                "TRAINING_PEAKS_CYCLING_VW",  # The correct table name
+                "TRAINING_PEAKS_DATA",
+                "TRAININGPEAKS_DATA", 
+                "TRAINING_PEAKS",
+                "TRAININGPEAKS",
+                "TP_DATA",
+                "EXERCISE_DATA",
+                "WORKOUT_DATA"
+            ] + training_tables  # Add any discovered training tables
+            
+            df = None
+            successful_table = None
+            
+            for table_name in possible_tables:
+                try:
+                    # Try to query a small sample first
+                    sample_query = f"SELECT * FROM {table_name} LIMIT 5"
+                    sample_df = pd.read_sql(sample_query, conn)
+                    
+                    if not sample_df.empty:
+                        st.write(f"Sample data from {table_name}:")
+                        st.write(sample_df.head())
+                        st.write(f"Columns in {table_name}: {list(sample_df.columns)}")
+                        
+                        # If this looks like training data, get the full dataset
+                        if any(col in sample_df.columns for col in ['START_TIME', 'POWER_ZONE_LABEL', 'TSS', 'ENERGY']):
+                            query = f"""
+                            SELECT *
+                            FROM {table_name}
+                            ORDER BY START_TIME DESC
+                            """
+                            df = pd.read_sql(query, conn)
+                            successful_table = table_name
+                            st.success(f"Successfully loaded {len(df)} rows from table: {table_name}")
+                            break
+                        
+                except Exception as table_error:
+                    continue  # Try next table
+            
+            conn.close()
+            
+            if df is None:
+                st.error("No suitable training peaks table found. Please check the table names above and update the query.")
+                raise Exception("No accessible training peaks table found with expected columns")
+            
             # Convert date column to datetime with flexible format
             if 'START_TIME' in df.columns:
                 df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
+            
             return df
-        except FileNotFoundError:
-            st.error("Training Peaks data file not found. Please run the data extraction script first.")
-            return pd.DataFrame()
+            
         except Exception as e:
-            st.error(f"Error loading training peaks data: {e}")
-            return pd.DataFrame()
+            st.error(f"Error loading training peaks data from Snowflake: {e}")
+            
+            # Fallback to CSV if Snowflake connection fails
+            try:
+                st.warning("Falling back to CSV file...")
+                df = pd.read_csv('data/training_peaks_data.csv')
+                if 'START_TIME' in df.columns:
+                    df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
+                return df
+            except Exception as csv_error:
+                st.error(f"CSV fallback also failed: {csv_error}")
+                return pd.DataFrame()
+            except Exception as csv_error:
+                st.error(f"CSV fallback also failed: {csv_error}")
+                return pd.DataFrame()
     
     # Load data
     df_training_peaks = load_training_peaks_data()
