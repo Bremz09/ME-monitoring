@@ -61,18 +61,38 @@ if authentication_status:
     def load_training_peaks_data():
         """Load training peaks data from Snowflake with caching"""
         try:
-            st.info("Connecting to Snowflake with Azure AD authentication...")
+            # Check if secrets are available
+            if "snowflake" not in st.secrets:
+                st.error("❌ Snowflake secrets not found!")
+                st.info("Please add Snowflake credentials to your Streamlit Cloud app secrets.")
+                raise Exception("Snowflake secrets not configured")
             
-            # Snowflake connection parameters for Azure AD
-            conn = snowflake.connector.connect(
-                account=st.secrets["snowflake"]["account"],
-                user=st.secrets["snowflake"]["user"],
-                authenticator=st.secrets["snowflake"]["authenticator"],  # externalbrowser for Azure AD
-                role=st.secrets["snowflake"]["role"],
-                warehouse=st.secrets["snowflake"]["warehouse"],
-                database=st.secrets["snowflake"]["database"],
-                schema=st.secrets["snowflake"]["schema"]
-            )
+            st.info("Connecting to Snowflake...")
+            
+            # Snowflake connection parameters
+            conn_params = {
+                "account": st.secrets["snowflake"]["account"],
+                "user": st.secrets["snowflake"]["user"],
+                "role": st.secrets["snowflake"]["role"],
+                "warehouse": st.secrets["snowflake"]["warehouse"],
+                "database": st.secrets["snowflake"]["database"],
+                "schema": st.secrets["snowflake"]["schema"]
+            }
+            
+            # Add authentication method based on what's available
+            if "authenticator" in st.secrets["snowflake"]:
+                auth_method = st.secrets["snowflake"]["authenticator"]
+                if auth_method == "externalbrowser":
+                    st.warning("⚠️ External browser authentication detected. This works locally but not on Streamlit Cloud.")
+                    st.info("For cloud deployment, you'll need to use password or key-based authentication.")
+                conn_params["authenticator"] = auth_method
+            elif "password" in st.secrets["snowflake"]:
+                conn_params["password"] = st.secrets["snowflake"]["password"]
+            else:
+                st.error("❌ No authentication method found in secrets!")
+                raise Exception("No password or authenticator found in secrets")
+            
+            conn = snowflake.connector.connect(**conn_params)
             
             st.success("Connected to Snowflake successfully!")
             
