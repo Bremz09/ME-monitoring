@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import snowflake.connector
 import numpy as np
 import os
+import os
 import json
 import pickle
 import streamlit_authenticator as stauth
@@ -59,13 +60,40 @@ if authentication_status:
     
     @st.cache_data
     def load_training_peaks_data():
-        """Load training peaks data from Snowflake with caching"""
+        """Load training peaks data from CSV (synced from Snowflake via GitHub Actions)"""
         try:
+            # Try loading from CSV first (GitHub Actions keeps this updated)
+            csv_path = 'data/training_peaks_data.csv'
+            
+            if os.path.exists(csv_path):
+                st.info("📊 Loading data from synchronized CSV file...")
+                df = pd.read_csv(csv_path)
+                
+                # Check metadata for last sync time
+                metadata_path = 'data/metadata.json'
+                if os.path.exists(metadata_path):
+                    import json
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                    last_sync = metadata.get('last_sync', 'Unknown')
+                    st.success(f"✅ Loaded {len(df)} rows | Last updated: {last_sync}")
+                else:
+                    st.success(f"✅ Loaded {len(df)} rows from CSV")
+                
+                # Convert date column to datetime
+                if 'START_TIME' in df.columns:
+                    df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
+                
+                return df
+            
+            # Fallback: Try Snowflake connection (for local development)
+            st.warning("CSV file not found, attempting direct Snowflake connection...")
+            
             # Check if secrets are available
             if "snowflake" not in st.secrets:
-                st.error("❌ Snowflake secrets not found!")
-                st.info("Please add Snowflake credentials to your Streamlit Cloud app secrets.")
-                raise Exception("Snowflake secrets not configured")
+                st.error("❌ No CSV file found and no Snowflake secrets configured!")
+                st.info("For deployed apps, data should be synced via GitHub Actions.")
+                raise Exception("No data source available")
             
             st.info("Connecting to Snowflake...")
             
@@ -84,7 +112,6 @@ if authentication_status:
                 auth_method = st.secrets["snowflake"]["authenticator"]
                 if auth_method == "externalbrowser":
                     st.warning("⚠️ External browser authentication detected. This works locally but not on Streamlit Cloud.")
-                    st.info("For cloud deployment, you'll need to use password or key-based authentication.")
                 conn_params["authenticator"] = auth_method
             elif "password" in st.secrets["snowflake"]:
                 conn_params["password"] = st.secrets["snowflake"]["password"]
@@ -251,7 +278,7 @@ if authentication_status:
             df_athlete_data_zones['WEEKS_PAST'].isin(recent_weeks)
         ].copy()
     
-    # df_athlete_data_zones_restrict
+    df_athlete_data_zones_restrict
     
     # Create tabs for different chart types
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Training Time", "TSS", "Energy (kJ)", "Power Zones", "Power Zones %"])
