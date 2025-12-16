@@ -260,8 +260,9 @@ if authentication_status:
         current_week_start = today - pd.Timedelta(days=days_since_monday)
         
         # Calculate week number for each row
+        # For each date, find its Monday (start of its week), then count weeks from current Monday
         df_athlete_data_zones['WEEKS_PAST'] = df_athlete_data_zones['START_TIME'].apply(
-            lambda x: ((current_week_start - pd.Timestamp(x).normalize()).days + pd.Timestamp(x).weekday()) // 7
+            lambda x: (current_week_start - (pd.Timestamp(x).normalize() - pd.Timedelta(days=pd.Timestamp(x).weekday()))).days // 7
         )
         
         # Reorder columns to put WEEKS_PAST in 7th position
