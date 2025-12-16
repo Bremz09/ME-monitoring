@@ -139,8 +139,31 @@ if authentication_status:
                 else:
                     st.error("IP whitelist issue detected but couldn't extract IP address.")
                 st.code(error_msg, language=None)
+            # Check for authentication/password issues
+            elif "Incorrect username or password" in error_msg or "Invalid username or password" in error_msg:
+                st.error("🔐 **Password Authentication Failed**")
+                st.warning("**Possible reasons:**")
+                st.markdown("""
+                - Incorrect password in secrets file
+                - Username or password has changed
+                - Account is locked or disabled
+                - Password has expired
+                """)
+                st.info("💡 **Solution:** Update your password in the Streamlit secrets configuration.")
+                st.code(error_msg, language=None)
+            elif "Authentication" in error_msg or "credentials" in error_msg.lower():
+                st.error("🔐 **Authentication Failed**")
+                st.warning("There was a problem authenticating with Snowflake.")
+                st.markdown("""
+                **Check:**
+                - Password is correct in secrets file
+                - Account name is correct: `URHWEIA-HPSNZ`
+                - Username is correct: `SAM.BREMER@HPSNZ.ORG.NZ`
+                """)
+                st.code(error_msg, language=None)
             else:
-                st.error(f"Database error: {error_msg}")
+                st.error(f"**Database Error:** {error_msg}")
+                st.info("This may be a connection, permission, or configuration issue.")
             
             # Fallback to CSV if Snowflake connection fails
             try:
