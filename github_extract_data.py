@@ -111,17 +111,25 @@ def extract_data():
         print("=" * 70)
         print("❌ Snowflake Connection Error")
         print("=" * 70)
+        print(f"\nFull error message:\n{error_msg}\n")
         
         if "IP/Token" in error_msg and "not allowed" in error_msg:
-            print("\n⚠️ IP WHITELIST ISSUE DETECTED")
-            print("\nThis GitHub Actions runner IP is blocked by Snowflake network policy.")
-            print("\nTo fix this, your Snowflake admin needs to whitelist GitHub Actions IPs.")
-            print("\nSee SNOWFLAKE_IP_WHITELIST_REQUEST.md for details to send to admin.")
-            print("\n📋 Current runner IP may be visible in error above.")
-            print("\n💡 Temporary workaround: Run manual sync from whitelisted computer")
-            print("   then commit/push to GitHub.")
+            # Extract IP address from error message
+            import re
+            ip_match = re.search(r'IP/Token (\d+\.\d+\.\d+\.\d+)', error_msg)
+            if ip_match:
+                blocked_ip = ip_match.group(1)
+                print(f"\n🚫 BLOCKED IP ADDRESS: {blocked_ip}")
+                print("\n⚠️ This specific GitHub Actions runner IP needs to be whitelisted.")
+                print(f"\n📋 Send this IP to your Snowflake admin: {blocked_ip}")
+                print("\nNote: GitHub Actions uses multiple IPs from their runner pool.")
+                print("You may need to whitelist a range or run this multiple times to identify all IPs.")
+            else:
+                print("\n⚠️ IP WHITELIST ISSUE DETECTED")
+                print("\nCould not extract IP from error message.")
+                print("Check the full error message above for the IP address.")
         else:
-            print(f"Error: {error_msg}")
+            print(f"\n❌ Error: {error_msg}")
         
         print("=" * 70)
         return False
