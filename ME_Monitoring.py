@@ -60,42 +60,16 @@ if authentication_status:
     
     @st.cache_data
     def load_training_peaks_data():
-        """Load training peaks data from CSV (synced from Snowflake via GitHub Actions)"""
+        """Load training peaks data directly from Snowflake"""
+        
+        # Try Snowflake connection first
         try:
-            # Try loading from CSV first (GitHub Actions keeps this updated)
-            csv_path = 'data/training_peaks_data.csv'
-            
-            if os.path.exists(csv_path):
-                st.info("📊 Loading data from synchronized CSV file...")
-                df = pd.read_csv(csv_path)
-                
-                # Check metadata for last sync time
-                metadata_path = 'data/metadata.json'
-                if os.path.exists(metadata_path):
-                    import json
-                    with open(metadata_path, 'r') as f:
-                        metadata = json.load(f)
-                    last_sync = metadata.get('last_sync', 'Unknown')
-                    st.success(f"✅ Loaded {len(df)} rows | Last updated: {last_sync}")
-                else:
-                    st.success(f"✅ Loaded {len(df)} rows from CSV")
-                
-                # Convert date column to datetime
-                if 'START_TIME' in df.columns:
-                    df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
-                
-                return df
-            
-            # Fallback: Try Snowflake connection (for local development)
-            st.warning("CSV file not found, attempting direct Snowflake connection...")
-            
             # Check if secrets are available
             if "snowflake" not in st.secrets:
-                st.error("❌ No CSV file found and no Snowflake secrets configured!")
-                st.info("For deployed apps, data should be synced via GitHub Actions.")
-                raise Exception("No data source available")
+                st.warning("⚠️ No Snowflake secrets configured. Trying CSV fallback...")
+                raise Exception("No Snowflake secrets")
             
-            st.info("Connecting to Snowflake...")
+            st.info("🔄 Connecting to Snowflake for live data...")
             
             # Snowflake connection parameters
             conn_params = {
@@ -108,87 +82,40 @@ if authentication_status:
             }
             
             # Add authentication method based on what's available
-            if "authenticator" in st.secrets["snowflake"]:
+            # Prioritize password authentication over other methods
+            if "password" in st.secrets["snowflake"]:
+                conn_params["password"] = st.secrets["snowflake"]["password"]
+                st.info("🔐 Using password authentication...")
+            elif "authenticator" in st.secrets["snowflake"]:
                 auth_method = st.secrets["snowflake"]["authenticator"]
                 if auth_method == "externalbrowser":
-                    st.warning("⚠️ External browser authentication detected. This works locally but not on Streamlit Cloud.")
+                    st.info("🔐 Using Azure AD authentication...")
                 conn_params["authenticator"] = auth_method
-            elif "password" in st.secrets["snowflake"]:
-                conn_params["password"] = st.secrets["snowflake"]["password"]
             else:
                 st.error("❌ No authentication method found in secrets!")
                 raise Exception("No password or authenticator found in secrets")
             
             conn = snowflake.connector.connect(**conn_params)
             
-            st.success("Connected to Snowflake successfully!")
+            st.success("✅ Connected to Snowflake successfully!")
             
-            # First, let's explore the schema to find tables
-            cursor = conn.cursor()
+            # Query the known table directly
+            table_name = "TRAINING_PEAKS_CYCLING_VW"
+            query = f"""
+            SELECT *
+            FROM {table_name}
+            ORDER BY START_TIME DESC
+            """
             
-            # List all tables in the current schema
-            try:
-                cursor.execute("SHOW TABLES")
-                all_tables = cursor.fetchall()
-                table_names = [table[1] for table in all_tables]
-                st.write(f"Available tables in {st.secrets['snowflake']['database']}.{st.secrets['snowflake']['schema']}:")
-                st.write(table_names)
-            except Exception as table_error:
-                st.warning(f"Could not list tables: {table_error}")
-                table_names = []
-            
-            # Try to find training peaks related tables
-            training_tables = [name for name in table_names if any(keyword in name.upper() for keyword in ['TRAINING', 'PEAKS', 'TP', 'EXERCISE', 'WORKOUT'])]
-            
-            if training_tables:
-                st.write("Found potential training-related tables:", training_tables)
-            
-            # Try different possible table names (prioritize the known correct table)
-            possible_tables = [
-                "TRAINING_PEAKS_CYCLING_VW",  # The correct table name
-                "TRAINING_PEAKS_DATA",
-                "TRAININGPEAKS_DATA", 
-                "TRAINING_PEAKS",
-                "TRAININGPEAKS",
-                "TP_DATA",
-                "EXERCISE_DATA",
-                "WORKOUT_DATA"
-            ] + training_tables  # Add any discovered training tables
-            
-            df = None
-            successful_table = None
-            
-            for table_name in possible_tables:
-                try:
-                    # Try to query a small sample first
-                    sample_query = f"SELECT * FROM {table_name} LIMIT 5"
-                    sample_df = pd.read_sql(sample_query, conn)
-                    
-                    if not sample_df.empty:
-                        st.write(f"Sample data from {table_name}:")
-                        st.write(sample_df.head())
-                        st.write(f"Columns in {table_name}: {list(sample_df.columns)}")
-                        
-                        # If this looks like training data, get the full dataset
-                        if any(col in sample_df.columns for col in ['START_TIME', 'POWER_ZONE_LABEL', 'TSS', 'ENERGY']):
-                            query = f"""
-                            SELECT *
-                            FROM {table_name}
-                            ORDER BY START_TIME DESC
-                            """
-                            df = pd.read_sql(query, conn)
-                            successful_table = table_name
-                            st.success(f"Successfully loaded {len(df)} rows from table: {table_name}")
-                            break
-                        
-                except Exception as table_error:
-                    continue  # Try next table
-            
+            st.info(f"📊 Querying table: {table_name}...")
+            df = pd.read_sql(query, conn)
             conn.close()
             
-            if df is None:
-                st.error("No suitable training peaks table found. Please check the table names above and update the query.")
-                raise Exception("No accessible training peaks table found with expected columns")
+            st.success(f"✅ Loaded {len(df)} rows from Snowflake (live data)")
+            
+            if df is None or df.empty:
+                st.error(f"❌ No data found in table: {table_name}")
+                raise Exception("No data in Snowflake table")
             
             # Convert date column to datetime with flexible format
             if 'START_TIME' in df.columns:
@@ -196,21 +123,68 @@ if authentication_status:
             
             return df
             
-        except Exception as e:
-            st.error(f"Error loading training peaks data from Snowflake: {e}")
+        except snowflake.connector.errors.DatabaseError as e:
+            error_msg = str(e)
+            st.error("❌ Snowflake Connection Error")
+            
+            # Check for IP whitelist issue
+            if "IP/Token" in error_msg and "not allowed" in error_msg:
+                import re
+                ip_match = re.search(r'IP/Token (\d+\.\d+\.\d+\.\d+)', error_msg)
+                if ip_match:
+                    blocked_ip = ip_match.group(1)
+                    st.error(f"🚫 **BLOCKED IP ADDRESS: `{blocked_ip}`**")
+                    st.warning("This IP needs to be whitelisted by your Snowflake administrator.")
+                    st.info(f"Contact your admin and provide this IP: **{blocked_ip}**")
+                else:
+                    st.error("IP whitelist issue detected but couldn't extract IP address.")
+                st.code(error_msg, language=None)
+            else:
+                st.error(f"Database error: {error_msg}")
             
             # Fallback to CSV if Snowflake connection fails
             try:
-                st.warning("Falling back to CSV file...")
-                df = pd.read_csv('data/training_peaks_data.csv')
-                if 'START_TIME' in df.columns:
-                    df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
-                return df
+                st.warning("⚠️ Attempting to load from CSV backup...")
+                csv_path = 'data/training_peaks_data.csv'
+                if os.path.exists(csv_path):
+                    df = pd.read_csv(csv_path)
+                    
+                    # Check metadata for last sync time
+                    metadata_path = 'data/metadata.json'
+                    if os.path.exists(metadata_path):
+                        with open(metadata_path, 'r') as f:
+                            metadata = json.load(f)
+                        last_sync = metadata.get('last_sync', 'Unknown')
+                        st.info(f"📁 Loaded {len(df)} rows from CSV backup | Last updated: {last_sync}")
+                    else:
+                        st.info(f"📁 Loaded {len(df)} rows from CSV backup")
+                    
+                    if 'START_TIME' in df.columns:
+                        df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
+                    return df
+                else:
+                    st.error("❌ No CSV backup file found.")
+                    return pd.DataFrame()
             except Exception as csv_error:
-                st.error(f"CSV fallback also failed: {csv_error}")
+                st.error(f"❌ CSV fallback also failed: {csv_error}")
                 return pd.DataFrame()
-            except Exception as csv_error:
-                st.error(f"CSV fallback also failed: {csv_error}")
+                
+        except Exception as e:
+            st.error(f"❌ Unexpected error loading data: {e}")
+            
+            # Try CSV fallback for any other error
+            try:
+                st.warning("⚠️ Attempting to load from CSV backup...")
+                csv_path = 'data/training_peaks_data.csv'
+                if os.path.exists(csv_path):
+                    df = pd.read_csv(csv_path)
+                    st.info(f"📁 Loaded {len(df)} rows from CSV backup")
+                    if 'START_TIME' in df.columns:
+                        df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
+                    return df
+                else:
+                    return pd.DataFrame()
+            except:
                 return pd.DataFrame()
     
     # Load data
