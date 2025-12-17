@@ -81,19 +81,12 @@ if authentication_status:
                 "schema": st.secrets["snowflake"]["schema"]
             }
             
-            # Add authentication method based on what's available
-            # Prioritize password authentication over other methods
-            if "password" in st.secrets["snowflake"]:
-                conn_params["password"] = st.secrets["snowflake"]["password"]
-                st.info("🔐 Using password authentication...")
-            elif "authenticator" in st.secrets["snowflake"]:
-                auth_method = st.secrets["snowflake"]["authenticator"]
-                if auth_method == "externalbrowser":
-                    st.info("🔐 Using Azure AD authentication...")
-                conn_params["authenticator"] = auth_method
-            else:
-                st.error("❌ No authentication method found in secrets!")
-                raise Exception("No password or authenticator found in secrets")
+            # Add password authentication
+            if "password" not in st.secrets["snowflake"]:
+                st.error("❌ No password found in secrets!")
+                raise Exception("Password not configured in secrets")
+            
+            conn_params["password"] = st.secrets["snowflake"]["password"]
             
             conn = snowflake.connector.connect(**conn_params)
             
