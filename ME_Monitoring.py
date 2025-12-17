@@ -92,8 +92,53 @@ if authentication_status:
             
             st.success("✅ Connected to Snowflake successfully!")
             
-            # Query the known table directly
-            table_name = "TRAINING_PEAKS_CYCLING_VW"
+            # Explicitly set the warehouse, database, and schema
+            cursor = conn.cursor()
+            
+            try:
+                st.info(f"🏢 Using warehouse: {st.secrets['snowflake']['warehouse']}")
+                cursor.execute(f"USE WAREHOUSE {st.secrets['snowflake']['warehouse']}")
+                
+                st.info(f"🗄️ Using database: {st.secrets['snowflake']['database']}")
+                cursor.execute(f"USE DATABASE {st.secrets['snowflake']['database']}")
+                
+                st.info(f"📁 Using schema: {st.secrets['snowflake']['schema']}")
+                cursor.execute(f"USE SCHEMA {st.secrets['snowflake']['schema']}")
+                
+                # List available tables to help debug
+                st.info(f"📋 Checking available tables...")
+                cursor.execute("SHOW TABLES")
+                tables = cursor.fetchall()
+                available_tables = [table[1] for table in tables]  # Table name is in column 1
+                st.write(f"**Available tables:** {', '.join(available_tables)}")
+            except Exception as e:
+                st.error(f"❌ Error accessing database/schema: {str(e)}")
+                st.info("🔍 Trying to list accessible databases...")
+                cursor.execute("SHOW DATABASES")
+                dbs = cursor.fetchall()
+                st.write(f"**Accessible databases:** {[db[1] for db in dbs]}")
+                raise
+            
+            cursor.close()
+            
+            # Query the known table directly - try to find the correct table name
+            possible_names = [
+                "TRAINING_PEAKS_CYCLING_VW",
+                "TRAININGPEAKS_CYCLING_VW", 
+                "TP_CYCLING_VW",
+                "CYCLING_VW"
+            ]
+            
+            table_name = None
+            for name in possible_names:
+                if name in available_tables:
+                    table_name = name
+                    break
+            
+            if not table_name:
+                st.error(f"❌ Could not find training peaks table. Available: {', '.join(available_tables)}")
+                raise Exception("Training peaks table not found")
+            
             query = f"""
             SELECT *
             FROM {table_name}
