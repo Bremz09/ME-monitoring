@@ -25,7 +25,7 @@ def extract_training_peaks_data():
             authenticator='externalbrowser',
             role='PUBLIC',
             warehouse='COMPUTE_WH',
-            database='CONSUME',
+            database='CYCLING',
             schema='SMARTABASE'
         )
         
