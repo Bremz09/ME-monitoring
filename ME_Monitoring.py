@@ -81,69 +81,77 @@ if authentication_status:
                 "schema": st.secrets["snowflake"]["schema"]
             }
             
-            # Add password authentication
-            if "password" not in st.secrets["snowflake"]:
-                st.error("❌ No password found in secrets!")
-                raise Exception("Password not configured in secrets")
-            
-            conn_params["password"] = st.secrets["snowflake"]["password"]
+            # Add authentication - use externalbrowser locally, password when deployed
+            if "authenticator" in st.secrets["snowflake"]:
+                # Local development - use externalbrowser (SSO)
+                conn_params["authenticator"] = st.secrets["snowflake"]["authenticator"]
+                st.info("🔐 Using SSO authentication (externalbrowser)")
+            elif "password" in st.secrets["snowflake"]:
+                # Streamlit Cloud deployment - use password
+                conn_params["password"] = st.secrets["snowflake"]["password"]
+                st.info("🔐 Using password authentication")
+            else:
+                st.error("❌ No authentication method found in secrets!")
+                raise Exception("Neither 'authenticator' nor 'password' configured in secrets")
             
             conn = snowflake.connector.connect(**conn_params)
             
             st.success("✅ Connected to Snowflake successfully!")
             
-            # Explicitly set the warehouse, database, and schema
-            cursor = conn.cursor()
+            # # Explicitly set the warehouse, database, and schema
+            # cursor = conn.cursor()
             
-            try:
-                st.info(f"🏢 Using warehouse: {st.secrets['snowflake']['warehouse']}")
-                cursor.execute(f"USE WAREHOUSE {st.secrets['snowflake']['warehouse']}")
+            # try:
+            #     st.info(f"🏢 Using warehouse: {st.secrets['snowflake']['warehouse']}")
+            #     cursor.execute(f"USE WAREHOUSE {st.secrets['snowflake']['warehouse']}")
                 
-                st.info(f"🗄️ Using database: {st.secrets['snowflake']['database']}")
-                cursor.execute(f"USE DATABASE {st.secrets['snowflake']['database']}")
+            #     st.info(f"🗄️ Using database: {st.secrets['snowflake']['database']}")
+            #     cursor.execute(f"USE DATABASE {st.secrets['snowflake']['database']}")
                 
-                st.info(f"📁 Using schema: {st.secrets['snowflake']['schema']}")
-                cursor.execute(f"USE SCHEMA {st.secrets['snowflake']['schema']}")
+            #     st.info(f"📁 Using schema: {st.secrets['snowflake']['schema']}")
+            #     cursor.execute(f"USE SCHEMA {st.secrets['snowflake']['schema']}")
                 
-                # List available tables to help debug
-                st.info(f"📋 Checking available tables...")
-                cursor.execute("SHOW TABLES")
-                tables = cursor.fetchall()
-                available_tables = [table[1] for table in tables]  # Table name is in column 1
-                st.write(f"**Available tables:** {', '.join(available_tables)}")
-            except Exception as e:
-                st.error(f"❌ Error accessing database/schema: {str(e)}")
-                st.info("🔍 Trying to list accessible databases...")
-                cursor.execute("SHOW DATABASES")
-                dbs = cursor.fetchall()
-                st.write(f"**Accessible databases:** {[db[1] for db in dbs]}")
-                raise
+            #     # List available tables to help debug
+            #     st.info(f"📋 Checking available tables...")
+            #     cursor.execute("SHOW TABLES")
+            #     tables = cursor.fetchall()
+            #     available_tables = [table[1] for table in tables]  # Table name is in column 1
+            #     st.write(f"**Available tables:** {', '.join(available_tables)}")
+            # except Exception as e:
+            #     st.error(f"❌ Error accessing database/schema: {str(e)}")
+            #     st.info("🔍 Trying to list accessible Warehouses...")
+            #     cursor.execute("SHOW WAREHOUSES")
+            #     st.info("🔍 Trying to list accessible databases...")
+            #     cursor.execute("SHOW DATABASES")
+            #     dbs = cursor.fetchall()
+            #     st.write(f"**Accessible databases:** {[db[1] for db in dbs]}")
+            #     raise
             
-            cursor.close()
+            # cursor.close()
             
-            # Query the known table directly - try to find the correct table name
-            possible_names = [
-                "TRAINING_PEAKS_CYCLING_VW",
-                "TRAININGPEAKS_CYCLING_VW", 
-                "TP_CYCLING_VW",
-                "CYCLING_VW"
-            ]
+            # # Query the known table directly - try to find the correct table name
+            # possible_names = [
+            #     "TRAINING_PEAKS_CYCLING_VW",
+            #     "TRAININGPEAKS_CYCLING_VW", 
+            #     "TP_CYCLING_VW",
+            #     "CYCLING_VW"
+            # ]
             
-            table_name = None
-            for name in possible_names:
-                if name in available_tables:
-                    table_name = name
-                    break
+            # table_name = None
+            # for name in possible_names:
+            #     if name in available_tables:
+            #         table_name = name
+            #         break
             
-            if not table_name:
-                st.error(f"❌ Could not find training peaks table. Available: {', '.join(available_tables)}")
-                raise Exception("Training peaks table not found")
-            
+            # if not table_name:
+            #     st.error(f"❌ Could not find training peaks table. Available: {', '.join(available_tables)}")
+            #     raise Exception("Training peaks table not found")
+            query_columns = "USER_NAME_FIXED, WORKOUT_TYPE, START_TIME, POWER_ZONE_LABEL, POWER_ZONE_MINIMUM, POWER_ZONE_MAXIMUM, POWER_ZONE_SECONDS, TSS, ENERGY"
             query = f"""
-            SELECT * FROM COMPUTE_WH.CONSUME.SMARTABASE.TRAINING_PEAKS_CYCLING_VW ORDER BY START_TIME DESC
+            SELECT {query_columns} FROM CONSUME.SMARTABASE.TRAINING_PEAKS_CYCLING_VW ORDER BY START_TIME DESC
             """
             
-            st.info(f"📊 Querying table: {table_name}...")
+            # st.info(f"📊 Querying table: {table_name}...")
             df = pd.read_sql(query, conn)
             conn.close()
             
@@ -154,8 +162,8 @@ if authentication_status:
                 raise Exception("No data in Snowflake table")
             
             # Convert date column to datetime with flexible format
-            if 'START_TIME' in df.columns:
-                df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
+            # if 'START_TIME' in df.columns:
+            #     df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
             
             return df
             
@@ -248,7 +256,7 @@ if authentication_status:
     
     # Load data
     df_training_peaks = load_training_peaks_data()
-    
+    df_training_peaks
     # Create filtered copy with only rows that have power zone data
     # Check if POWER_ZONE_LABEL column exists
     if not df_training_peaks.empty and 'POWER_ZONE_LABEL' in df_training_peaks.columns:
@@ -311,9 +319,9 @@ if authentication_status:
         df_athlete_data_zones_restrict = df_athlete_data_zones[
             df_athlete_data_zones['WEEKS_PAST'].isin(recent_weeks)
         ].copy()
-    
+    df_athlete_data_zones
     df_athlete_data_zones_restrict
-    
+    today
     # Create tabs for different chart types
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Training Time", "TSS", "Energy (kJ)", "Power Zones", "Power Zones %"])
     
@@ -769,7 +777,19 @@ if authentication_status:
                     'POWER_ZONE_MINIMUM': 'first',
                     'POWER_ZONE_MAXIMUM': 'first'
                 }).reset_index()
-                zone_mapping['Power Range'] = zone_mapping['POWER_ZONE_MINIMUM'].astype(int).astype(str) + '-' + zone_mapping['POWER_ZONE_MAXIMUM'].astype(int).astype(str) + 'W'
+                
+                # Filter out zones with invalid power ranges
+                valid_zones = zone_mapping[zone_mapping['POWER_ZONE_MINIMUM'].notna() & zone_mapping['POWER_ZONE_MAXIMUM'].notna()]['POWER_ZONE_LABEL'].tolist()
+                weekly_zones = weekly_zones[weekly_zones['POWER_ZONE_LABEL'].isin(valid_zones)]
+                zone_mapping = zone_mapping[zone_mapping['POWER_ZONE_LABEL'].isin(valid_zones)]
+                
+                # Handle NaN values before converting to int
+                zone_mapping['Power Range'] = zone_mapping.apply(
+                    lambda row: f"{int(row['POWER_ZONE_MINIMUM'])}-{int(row['POWER_ZONE_MAXIMUM'])}W" 
+                    if pd.notna(row['POWER_ZONE_MINIMUM']) and pd.notna(row['POWER_ZONE_MAXIMUM']) 
+                    else row['POWER_ZONE_LABEL'], 
+                    axis=1
+                )
                 zone_map_dict = dict(zip(zone_mapping['POWER_ZONE_LABEL'], zone_mapping['Power Range']))
                 
                 # Pivot to get zones as columns
@@ -832,14 +852,27 @@ if authentication_status:
                     'POWER_ZONE_MINIMUM': 'first',
                     'POWER_ZONE_MAXIMUM': 'first'
                 }).reset_index()
-                zone_mapping['Power Range'] = zone_mapping['POWER_ZONE_MINIMUM'].astype(int).astype(str) + '-' + zone_mapping['POWER_ZONE_MAXIMUM'].astype(int).astype(str) + 'W'
+                
+                # Filter out zones with invalid power ranges
+                valid_zones = zone_mapping[zone_mapping['POWER_ZONE_MINIMUM'].notna() & zone_mapping['POWER_ZONE_MAXIMUM'].notna()]['POWER_ZONE_LABEL'].tolist()
+                weekly_zones = weekly_zones[weekly_zones['POWER_ZONE_LABEL'].isin(valid_zones)]
+                zone_mapping = zone_mapping[zone_mapping['POWER_ZONE_LABEL'].isin(valid_zones)]
+                
+                # Handle NaN values before converting to int
+                zone_mapping['Power Range'] = zone_mapping.apply(
+                    lambda row: f"{int(row['POWER_ZONE_MINIMUM'])}-{int(row['POWER_ZONE_MAXIMUM'])}W" 
+                    if pd.notna(row['POWER_ZONE_MINIMUM']) and pd.notna(row['POWER_ZONE_MAXIMUM']) 
+                    else row['POWER_ZONE_LABEL'], 
+                    axis=1
+                )
                 zone_map_dict = dict(zip(zone_mapping['POWER_ZONE_LABEL'], zone_mapping['Power Range']))
                 
                 # Pivot to get zones as columns
                 weekly_pivot = weekly_zones.pivot(index='Week_Start', columns='POWER_ZONE_LABEL', values='Power Zone Minutes').fillna(0)
                 
-                # Sort columns by Power Zone Minimum to get lowest zones at bottom
-                zone_order = zone_mapping.sort_values('POWER_ZONE_MINIMUM')['POWER_ZONE_LABEL'].tolist()
+                # Sort columns by Power Zone Minimum to get lowest zones at bottom (filter out NaN values first)
+                zone_mapping_valid = zone_mapping[zone_mapping['POWER_ZONE_MINIMUM'].notna()]
+                zone_order = zone_mapping_valid.sort_values('POWER_ZONE_MINIMUM')['POWER_ZONE_LABEL'].tolist()
                 weekly_pivot = weekly_pivot.reindex(columns=[col for col in zone_order if col in weekly_pivot.columns])
                 
                 # Create normalized percentage chart
