@@ -31,7 +31,7 @@ def extract_training_peaks_data():
         
         # Query the Training Peaks cycling view
         print("Extracting training data...")
-        query = "SELECT * FROM TRAINING_PEAKS_CYCLING_VW ORDER BY START_TIME"
+        query = "SELECT * FROM CONSUME.SMARTABASE.TRAINING_PEAKS_CYCLING_VW ORDER BY START_TIME DESC"
         df = pd.read_sql(query, ctx)
         
         # Close connection

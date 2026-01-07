@@ -140,9 +140,7 @@ if authentication_status:
                 raise Exception("Training peaks table not found")
             
             query = f"""
-            SELECT *
-            FROM {table_name}
-            ORDER BY START_TIME DESC
+            SELECT * FROM COMPUTE_WH.CONSUME.SMARTABASE.TRAINING_PEAKS_CYCLING_VW ORDER BY START_TIME DESC
             """
             
             st.info(f"📊 Querying table: {table_name}...")
