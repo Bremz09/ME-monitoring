@@ -1,13 +1,13 @@
 {
-  "last_updated": "2026-03-18T09:06:23.519592",
+  "last_updated": "2026-03-19T09:18:17.130722",
   "record_count": 30508,
   "date_range_start": "2017-05-17 10:00:00",
   "date_range_end": "2026-05-07 00:00:00",
   "athletes": [
-    "Thomas Sexton",
-    "Marshall Erwood",
     "Keegan Hornblow",
+    "Thomas Sexton",
     "Nicholas Kergozou De La Boessiere",
+    "Marshall Erwood",
     "Ben Oliver"
   ]
 }
