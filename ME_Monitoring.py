@@ -50,18 +50,29 @@ def load_training_peaks_data():
             "schema": st.secrets["snowflake"]["schema"]
         }
         
-        # Add authentication - use externalbrowser locally, password when deployed
-        if "authenticator" in st.secrets["snowflake"]:
-            # Local development - use externalbrowser (SSO)
-            conn_params["authenticator"] = st.secrets["snowflake"]["authenticator"]
+        # Add authentication
+        authenticator = st.secrets["snowflake"].get("authenticator", None)
+        password = st.secrets["snowflake"].get("password", None)
+
+        if authenticator == "externalbrowser":
+            # Local development - use browser-based SSO
+            conn_params["authenticator"] = "externalbrowser"
             st.info("🔐 Using SSO authentication (externalbrowser)")
-        elif "password" in st.secrets["snowflake"]:
-            # Streamlit Cloud deployment - use password
-            conn_params["password"] = st.secrets["snowflake"]["password"]
+        elif authenticator == "programmatic_access_token":
+            # Programmatic Access Token (PAT) - requires both authenticator and token
+            if not password:
+                st.error("❌ 'programmatic_access_token' authenticator requires 'password' (PAT token) in secrets!")
+                raise Exception("PAT token missing from secrets")
+            conn_params["authenticator"] = "programmatic_access_token"
+            conn_params["password"] = password
+            st.info("🔐 Using Programmatic Access Token (PAT) authentication")
+        elif password:
+            # Plain password authentication
+            conn_params["password"] = password
             st.info("🔐 Using password authentication")
         else:
             st.error("❌ No authentication method found in secrets!")
-            raise Exception("Neither 'authenticator' nor 'password' configured in secrets")
+            raise Exception("No valid authentication configured in secrets")
         
         conn = snowflake.connector.connect(**conn_params)
         
