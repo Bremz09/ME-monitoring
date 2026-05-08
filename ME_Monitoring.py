@@ -104,7 +104,7 @@ try:
         df_training_peaks = load_training_peaks_data()
 except Exception as e:
     st.error(f"❌ Failed to load data: {e}")
-
+df_training_peaks
 # Create filtered copy with only rows that have power zone data
 # Check if POWER_ZONE_LABEL column exists
 if not df_training_peaks.empty and 'POWER_ZONE_LABEL' in df_training_peaks.columns:
