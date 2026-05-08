@@ -327,7 +327,7 @@ with tab1:
         # Format x-axis to show dates nicely
         fig.update_xaxes(tickformat="%Y-%m-%d")
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("No data available for the selected athlete and time period.")
 
@@ -462,7 +462,7 @@ with tab2:
         )
         
         fig_tss.update_xaxes(tickformat="%Y-%m-%d")
-        st.plotly_chart(fig_tss, use_container_width=True)
+        st.plotly_chart(fig_tss, width='stretch')
     else:
         st.info("No data available for the selected athlete and time period.")
 
@@ -597,7 +597,7 @@ with tab3:
         )
         
         fig_energy.update_xaxes(tickformat="%Y-%m-%d")
-        st.plotly_chart(fig_energy, use_container_width=True)
+        st.plotly_chart(fig_energy, width='stretch')
     else:
         st.info("No data available for the selected athlete and time period.")
 
@@ -681,7 +681,7 @@ with tab4:
                 xaxis={'tickangle': 45}
             )
             
-            st.plotly_chart(fig_weekly, use_container_width=True)
+            st.plotly_chart(fig_weekly, width='stretch')
 
 # TAB 5: Power Zone Distribution (Percentage)
 with tab5:
@@ -767,7 +767,7 @@ with tab5:
                 xaxis={'tickangle': 45}
             )
             
-            st.plotly_chart(fig_percentage, use_container_width=True)
+            st.plotly_chart(fig_percentage, width='stretch')
         else:
             st.write("Missing required columns: 'POWER_ZONE_LABEL' and/or 'POWER_ZONE_SECONDS'")
             st.write("Available columns:", df_athlete_data_zones_restrict.columns.tolist())
