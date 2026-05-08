@@ -84,7 +84,12 @@ def load_training_peaks_data():
         """
         
         # st.info(f"📊 Querying table: {table_name}...")
-        df = pd.read_sql(query, conn)
+        cursor = conn.cursor()
+        cursor.execute(query)
+        columns = [desc[0] for desc in cursor.description]
+        data = cursor.fetchall()
+        df = pd.DataFrame(data, columns=columns)
+        cursor.close()
         conn.close()
         
         st.success(f"✅ Loaded {len(df)} rows from Snowflake (live data)")
