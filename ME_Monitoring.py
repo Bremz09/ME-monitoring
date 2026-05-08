@@ -65,15 +65,22 @@ def _run_query(conn, query, params=None):
     return pd.DataFrame(data, columns=columns)
 
 
-@st.cache_data
+ATHLETES = [
+    "Aaron Gate",
+    "Ally Wollaston",
+    "Bryony Botha",
+    "Emily Shearman",
+    "Jessie Hodges",
+    "Keegan Hornblow",
+    "Marshall Erwood",
+    "Nicholas Kergozou De La Boessiere",
+    "Samantha Donnell",
+    "Thomas Sexton",
+]
+
+
 def get_athlete_list():
-    """Fetch the distinct list of athlete names (lightweight query)."""
-    conn = _get_snowflake_conn()
-    try:
-        df = _run_query(conn, "SELECT DISTINCT USER_NAME_FIXED FROM TRAINING_PEAKS_CYCLING_VW ORDER BY 1")
-    finally:
-        conn.close()
-    return sorted(df["USER_NAME_FIXED"].dropna().tolist())
+    return ATHLETES
 
 
 @st.cache_data
