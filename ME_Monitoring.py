@@ -27,124 +27,122 @@ st.set_page_config(page_title='ME Monitoring Snowflake',
                   menu_items=None)
 
 
+def _get_snowflake_conn():
+    """Return an open Snowflake connection using secrets."""
+    if "snowflake" not in st.secrets:
+        raise Exception("No Snowflake secrets configured")
+    conn_params = {
+        "account": st.secrets["snowflake"]["account"],
+        "user": st.secrets["snowflake"]["user"],
+        "role": st.secrets["snowflake"]["role"],
+        "warehouse": st.secrets["snowflake"]["warehouse"],
+        "database": st.secrets["snowflake"]["database"],
+        "schema": st.secrets["snowflake"]["schema"],
+    }
+    authenticator = st.secrets["snowflake"].get("authenticator", None)
+    password = st.secrets["snowflake"].get("password", None)
+    if authenticator == "externalbrowser":
+        conn_params["authenticator"] = "externalbrowser"
+    elif authenticator == "programmatic_access_token":
+        if not password:
+            raise Exception("PAT token missing from secrets")
+        conn_params["authenticator"] = "programmatic_access_token"
+        conn_params["password"] = password
+    elif password:
+        conn_params["password"] = password
+    else:
+        raise Exception("No valid authentication configured in secrets")
+    return snowflake.connector.connect(**conn_params)
+
+
+def _run_query(conn, query, params=None):
+    """Execute a query and return a DataFrame, then close the cursor."""
+    cursor = conn.cursor()
+    cursor.execute(query, params or ())
+    columns = [desc[0] for desc in cursor.description]
+    data = cursor.fetchall()
+    cursor.close()
+    return pd.DataFrame(data, columns=columns)
+
+
 @st.cache_data
-def load_training_peaks_data():
-    """Load training peaks data directly from Snowflake"""
-    
-    # Try Snowflake connection first
+def get_athlete_list():
+    """Fetch the distinct list of athlete names (lightweight query)."""
+    conn = _get_snowflake_conn()
     try:
-        # Check if secrets are available
-        if "snowflake" not in st.secrets:
-            raise Exception("No Snowflake secrets")
-        
-        # Snowflake connection parameters
-        conn_params = {
-            "account": st.secrets["snowflake"]["account"],
-            "user": st.secrets["snowflake"]["user"],
-            "role": st.secrets["snowflake"]["role"],
-            "warehouse": st.secrets["snowflake"]["warehouse"],
-            "database": st.secrets["snowflake"]["database"],
-            "schema": st.secrets["snowflake"]["schema"]
-        }
-        
-        # Add authentication
-        authenticator = st.secrets["snowflake"].get("authenticator", None)
-        password = st.secrets["snowflake"].get("password", None)
-
-        if authenticator == "externalbrowser":
-            conn_params["authenticator"] = "externalbrowser"
-        elif authenticator == "programmatic_access_token":
-            if not password:
-                raise Exception("PAT token missing from secrets")
-            conn_params["authenticator"] = "programmatic_access_token"
-            conn_params["password"] = password
-        elif password:
-            conn_params["password"] = password
-        else:
-            raise Exception("No valid authentication configured in secrets")
-        
-        conn = snowflake.connector.connect(**conn_params)
-        
-        query_columns = "USER_NAME_FIXED, WORKOUT_TYPE, START_TIME, POWER_ZONE_LABEL, POWER_ZONE_MINIMUM, POWER_ZONE_MAXIMUM, POWER_ZONE_SECONDS, TSS, ENERGY"
-        query = f"""
-        SELECT * FROM TRAINING_PEAKS_CYCLING_VW ORDER BY START_TIME DESC
-        """
-        
-        # st.info(f"📊 Querying table: {table_name}...")
-        cursor = conn.cursor()
-        cursor.execute(query)
-        columns = [desc[0] for desc in cursor.description]
-        data = cursor.fetchall()
-        df = pd.DataFrame(data, columns=columns)
-        cursor.close()
+        df = _run_query(conn, "SELECT DISTINCT USER_NAME_FIXED FROM TRAINING_PEAKS_CYCLING_VW ORDER BY 1")
+    finally:
         conn.close()
-        
-        if df is None or df.empty:
-            raise Exception("No data returned from Snowflake")
-        
-        # Convert date column to datetime, stripping any timezone info for consistent arithmetic
-        if 'START_TIME' in df.columns:
-            st_col = pd.to_datetime(df['START_TIME'], errors='coerce')
-            if st_col.dt.tz is not None:
-                st_col = st_col.dt.tz_convert(None)
-            df['START_TIME'] = st_col
-        
-        return df
-        
-    except Exception as e:
-        # Re-raise so the calling code can display the error (st.* calls inside
-        # @st.cache_data are replayed on every rerun and would cause the "connecting"
-        # flash + crash that the user sees when changing widgets).
-        raise e
+    return sorted(df["USER_NAME_FIXED"].dropna().tolist())
 
-# Load data
-df_training_peaks = pd.DataFrame()
-try:
-    with st.spinner("Loading data from Snowflake..."):
-        df_training_peaks = load_training_peaks_data()
-except Exception as e:
-    st.error(f"❌ Failed to load data: {e}")
-df_training_peaks
-# Create filtered copy with only rows that have power zone data
-# Check if POWER_ZONE_LABEL column exists
-if not df_training_peaks.empty and 'POWER_ZONE_LABEL' in df_training_peaks.columns:
-    df_zones = df_training_peaks[df_training_peaks["POWER_ZONE_LABEL"].notna()].copy()
-else:
-    df_zones = pd.DataFrame()
-    if not df_training_peaks.empty:
-        st.warning("POWER_ZONE_LABEL column not found in the data. Available columns: " + ", ".join(df_training_peaks.columns.tolist()))
 
-# UI Components
+@st.cache_data
+def load_athlete_data(athlete, weeks):
+    """Fetch only the required athlete's data, limited to weeks+8 weeks for rolling averages."""
+    conn = _get_snowflake_conn()
+    try:
+        query = """
+            SELECT
+                USER_NAME_FIXED, WORKOUT_TYPE, START_TIME,
+                POWER_ZONE_LABEL, POWER_ZONE_MINIMUM, POWER_ZONE_MAXIMUM,
+                POWER_ZONE_SECONDS, TSS, ENERGY
+            FROM TRAINING_PEAKS_CYCLING_VW
+            WHERE USER_NAME_FIXED = %s
+              AND START_TIME >= DATEADD(week, %s, CURRENT_DATE())
+            ORDER BY START_TIME DESC
+        """
+        # Fetch weeks + 8 extra so rolling-average calculations have enough history
+        df = _run_query(conn, query, (athlete, -(weeks + 8)))
+    finally:
+        conn.close()
+
+    if df.empty:
+        raise Exception(f"No data found for athlete: {athlete}")
+
+    st_col = pd.to_datetime(df["START_TIME"], errors="coerce")
+    if st_col.dt.tz is not None:
+        st_col = st_col.dt.tz_convert(None)
+    df["START_TIME"] = st_col
+    return df
+
+
+# ── UI components ──────────────────────────────────────────────────────────────
 col1, col2 = st.columns(2)
 
 with col1:
-    # Get unique athletes from the data
-    if not df_training_peaks.empty and 'USER_NAME_FIXED' in df_training_peaks.columns:
-        available_athletes = sorted(df_training_peaks['USER_NAME_FIXED'].unique())
-        selected_athlete = st.selectbox("Select athlete", options=available_athletes)
-    else:
-        st.error("No athlete data available. Please check the data file.")
-        selected_athlete = None
+    try:
+        available_athletes = get_athlete_list()
+    except Exception as e:
+        st.error(f"❌ Could not load athlete list: {e}")
+        available_athletes = []
+    selected_athlete = st.selectbox("Select athlete", options=available_athletes) if available_athletes else None
 
 with col2:
     weeks = st.slider("Select number of past weeks", min_value=4, max_value=52, value=12, step=1)
 
+# ── Load athlete data ──────────────────────────────────────────────────────────
 # Safe defaults so tab code never hits NameError
 df_athlete_data_zones = pd.DataFrame()
 df_athlete_data_zones_restrict = pd.DataFrame()
 current_week_start = pd.Timestamp.now().normalize()
 current_week_start = current_week_start - pd.Timedelta(days=current_week_start.weekday())
 
-# Filter data based on selected athlete and weeks
 if selected_athlete:
-    # Filter by athlete
-    df_athlete_data = df_training_peaks[df_training_peaks['USER_NAME_FIXED'] == selected_athlete].copy()
-    
-    # Check if we have power zone data for this athlete
-    if 'POWER_ZONE_LABEL' in df_athlete_data.columns:
-        df_athlete_data_zones = df_athlete_data[df_athlete_data["POWER_ZONE_LABEL"].notna()].sort_values(["START_TIME","POWER_ZONE_MINIMUM"], ascending=[False,True]).copy()
-    else:
-        st.warning("No power zone data available - POWER_ZONE_LABEL column not found.")
+    try:
+        with st.spinner("Loading data..."):
+            df_raw = load_athlete_data(selected_athlete, weeks)
+    except Exception as e:
+        st.error(f"❌ Failed to load data: {e}")
+        df_raw = pd.DataFrame()
+
+    if not df_raw.empty and "POWER_ZONE_LABEL" in df_raw.columns:
+        df_athlete_data_zones = (
+            df_raw[df_raw["POWER_ZONE_LABEL"].notna()]
+            .sort_values(["START_TIME", "POWER_ZONE_MINIMUM"], ascending=[False, True])
+            .copy()
+        )
+    elif not df_raw.empty:
+        st.warning("POWER_ZONE_LABEL column not found in the data.")
 
 # Add WEEK column - week starts on Monday, current week = 0
 if not df_athlete_data_zones.empty:
