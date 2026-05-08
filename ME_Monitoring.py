@@ -98,9 +98,12 @@ def load_training_peaks_data():
             st.error(f"❌ No data found in table: {table_name}")
             raise Exception("No data in Snowflake table")
         
-        # Convert date column to datetime with flexible format
-        # if 'START_TIME' in df.columns:
-        #     df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
+        # Convert date column to datetime, stripping any timezone info for consistent arithmetic
+        if 'START_TIME' in df.columns:
+            st_col = pd.to_datetime(df['START_TIME'], errors='coerce')
+            if st_col.dt.tz is not None:
+                st_col = st_col.dt.tz_convert(None)
+            df['START_TIME'] = st_col
         
         return df
         
@@ -258,7 +261,6 @@ if not df_athlete_data_zones.empty:
     ].copy()
 # df_athlete_data_zones
 # df_athlete_data_zones_restrict
-today
 # Create tabs for different chart types
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["Training Time", "TSS", "Energy (kJ)", "Power Zones", "Power Zones %"])
 
