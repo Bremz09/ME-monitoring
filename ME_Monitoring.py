@@ -35,10 +35,7 @@ def load_training_peaks_data():
     try:
         # Check if secrets are available
         if "snowflake" not in st.secrets:
-            st.warning("⚠️ No Snowflake secrets configured. Trying CSV fallback...")
             raise Exception("No Snowflake secrets")
-        
-        st.info("🔄 Connecting to Snowflake for live data...")
         
         # Snowflake connection parameters
         conn_params = {
@@ -55,28 +52,18 @@ def load_training_peaks_data():
         password = st.secrets["snowflake"].get("password", None)
 
         if authenticator == "externalbrowser":
-            # Local development - use browser-based SSO
             conn_params["authenticator"] = "externalbrowser"
-            st.info("🔐 Using SSO authentication (externalbrowser)")
         elif authenticator == "programmatic_access_token":
-            # Programmatic Access Token (PAT) - requires both authenticator and token
             if not password:
-                st.error("❌ 'programmatic_access_token' authenticator requires 'password' (PAT token) in secrets!")
                 raise Exception("PAT token missing from secrets")
             conn_params["authenticator"] = "programmatic_access_token"
             conn_params["password"] = password
-            st.info("🔐 Using Programmatic Access Token (PAT) authentication")
         elif password:
-            # Plain password authentication
             conn_params["password"] = password
-            st.info("🔐 Using password authentication")
         else:
-            st.error("❌ No authentication method found in secrets!")
             raise Exception("No valid authentication configured in secrets")
         
         conn = snowflake.connector.connect(**conn_params)
-        
-        st.success("✅ Connected to Snowflake successfully!")
         
         query_columns = "USER_NAME_FIXED, WORKOUT_TYPE, START_TIME, POWER_ZONE_LABEL, POWER_ZONE_MINIMUM, POWER_ZONE_MAXIMUM, POWER_ZONE_SECONDS, TSS, ENERGY"
         query = f"""
@@ -92,11 +79,8 @@ def load_training_peaks_data():
         cursor.close()
         conn.close()
         
-        st.success(f"✅ Loaded {len(df)} rows from Snowflake (live data)")
-        
         if df is None or df.empty:
-            st.error(f"❌ No data found in table: {table_name}")
-            raise Exception("No data in Snowflake table")
+            raise Exception("No data returned from Snowflake")
         
         # Convert date column to datetime, stripping any timezone info for consistent arithmetic
         if 'START_TIME' in df.columns:
@@ -107,95 +91,19 @@ def load_training_peaks_data():
         
         return df
         
-    except snowflake.connector.errors.DatabaseError as e:
-        error_msg = str(e)
-        st.error("❌ Snowflake Connection Error")
-        
-        # Check for IP whitelist issue
-        if "IP/Token" in error_msg and "not allowed" in error_msg:
-            import re
-            ip_match = re.search(r'IP/Token (\d+\.\d+\.\d+\.\d+)', error_msg)
-            if ip_match:
-                blocked_ip = ip_match.group(1)
-                st.error(f"🚫 **BLOCKED IP ADDRESS: `{blocked_ip}`**")
-                st.warning("This IP needs to be whitelisted by your Snowflake administrator.")
-                st.info(f"Contact your admin and provide this IP: **{blocked_ip}**")
-            else:
-                st.error("IP whitelist issue detected but couldn't extract IP address.")
-            st.code(error_msg, language=None)
-        # Check for authentication/password issues
-        elif "Incorrect username or password" in error_msg or "Invalid username or password" in error_msg:
-            st.error("🔐 **Password Authentication Failed**")
-            st.warning("**Possible reasons:**")
-            st.markdown("""
-            - Incorrect password in secrets file
-            - Username or password has changed
-            - Account is locked or disabled
-            - Password has expired
-            """)
-            st.info("💡 **Solution:** Update your password in the Streamlit secrets configuration.")
-            st.code(error_msg, language=None)
-        elif "Authentication" in error_msg or "credentials" in error_msg.lower():
-            st.error("🔐 **Authentication Failed**")
-            st.warning("There was a problem authenticating with Snowflake.")
-            st.markdown("""
-            **Check:**
-            - Password is correct in secrets file
-            - Account name is correct: `URHWEIA-HPSNZ`
-            - Username is correct: `SAM.BREMER@HPSNZ.ORG.NZ`
-            """)
-            st.code(error_msg, language=None)
-        else:
-            st.error(f"**Database Error:** {error_msg}")
-            st.info("This may be a connection, permission, or configuration issue.")
-        
-        # Fallback to CSV if Snowflake connection fails
-        try:
-            st.warning("⚠️ Attempting to load from CSV backup...")
-            csv_path = 'data/training_peaks_data.csv'
-            if os.path.exists(csv_path):
-                df = pd.read_csv(csv_path)
-                
-                # Check metadata for last sync time
-                metadata_path = 'data/metadata.json'
-                if os.path.exists(metadata_path):
-                    with open(metadata_path, 'r') as f:
-                        metadata = json.load(f)
-                    last_sync = metadata.get('last_sync', 'Unknown')
-                    st.info(f"📁 Loaded {len(df)} rows from CSV backup | Last updated: {last_sync}")
-                else:
-                    st.info(f"📁 Loaded {len(df)} rows from CSV backup")
-                
-                if 'START_TIME' in df.columns:
-                    df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
-                return df
-            else:
-                st.error("❌ No CSV backup file found.")
-                return pd.DataFrame()
-        except Exception as csv_error:
-            st.error(f"❌ CSV fallback also failed: {csv_error}")
-            return pd.DataFrame()
-            
     except Exception as e:
-        st.error(f"❌ Unexpected error loading data: {e}")
-        
-        # Try CSV fallback for any other error
-        try:
-            st.warning("⚠️ Attempting to load from CSV backup...")
-            csv_path = 'data/training_peaks_data.csv'
-            if os.path.exists(csv_path):
-                df = pd.read_csv(csv_path)
-                st.info(f"📁 Loaded {len(df)} rows from CSV backup")
-                if 'START_TIME' in df.columns:
-                    df['START_TIME'] = pd.to_datetime(df['START_TIME'], format='mixed', errors='coerce')
-                return df
-            else:
-                return pd.DataFrame()
-        except:
-            return pd.DataFrame()
+        # Re-raise so the calling code can display the error (st.* calls inside
+        # @st.cache_data are replayed on every rerun and would cause the "connecting"
+        # flash + crash that the user sees when changing widgets).
+        raise e
 
 # Load data
-df_training_peaks = load_training_peaks_data()
+df_training_peaks = pd.DataFrame()
+try:
+    with st.spinner("Loading data from Snowflake..."):
+        df_training_peaks = load_training_peaks_data()
+except Exception as e:
+    st.error(f"❌ Failed to load data: {e}")
 
 # Create filtered copy with only rows that have power zone data
 # Check if POWER_ZONE_LABEL column exists
@@ -221,6 +129,12 @@ with col1:
 with col2:
     weeks = st.slider("Select number of past weeks", min_value=4, max_value=52, value=12, step=1)
 
+# Safe defaults so tab code never hits NameError
+df_athlete_data_zones = pd.DataFrame()
+df_athlete_data_zones_restrict = pd.DataFrame()
+current_week_start = pd.Timestamp.now().normalize()
+current_week_start = current_week_start - pd.Timedelta(days=current_week_start.weekday())
+
 # Filter data based on selected athlete and weeks
 if selected_athlete:
     # Filter by athlete
@@ -230,7 +144,6 @@ if selected_athlete:
     if 'POWER_ZONE_LABEL' in df_athlete_data.columns:
         df_athlete_data_zones = df_athlete_data[df_athlete_data["POWER_ZONE_LABEL"].notna()].sort_values(["START_TIME","POWER_ZONE_MINIMUM"], ascending=[False,True]).copy()
     else:
-        df_athlete_data_zones = pd.DataFrame()
         st.warning("No power zone data available - POWER_ZONE_LABEL column not found.")
 
 # Add WEEK column - week starts on Monday, current week = 0
