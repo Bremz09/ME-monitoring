@@ -132,7 +132,7 @@ with col2:
 df_raw = pd.DataFrame()
 df_athlete_data_zones = pd.DataFrame()
 df_athlete_data_zones_restrict = pd.DataFrame()
-current_week_start = pd.Timestamp.now().normalize()
+current_week_start = pd.Timestamp.now(tz='Pacific/Auckland').normalize().tz_localize(None)
 current_week_start = current_week_start - pd.Timedelta(days=current_week_start.weekday())
 
 if selected_athlete:
@@ -151,11 +151,11 @@ if selected_athlete:
         )
     elif not df_raw.empty:
         st.warning("POWER_ZONE_LABEL column not found in the data.")
-df_raw
+
 # Add WEEK column - week starts on Monday, current week = 0
 if not df_raw.empty:
     # Define the start of the current week (Monday of this week)
-    today = pd.Timestamp.now().normalize()
+    today = pd.Timestamp.now(tz='Pacific/Auckland').normalize().tz_localize(None)
     days_since_monday = today.weekday()  # Monday = 0, Sunday = 6
     current_week_start = today - pd.Timedelta(days=days_since_monday)
 
@@ -174,7 +174,7 @@ if not df_raw.empty:
             cols.remove('WEEKS_PAST')
             cols.insert(6, 'WEEKS_PAST')
             df_athlete_data_zones = df_athlete_data_zones[cols]
-
+    df_raw
     # Filter to show only recent weeks (1 to weeks)
     recent_weeks = list(range(1, weeks + 1))
 
