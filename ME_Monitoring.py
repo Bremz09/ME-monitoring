@@ -74,7 +74,7 @@ ATHLETES = [
     "Keegan Hornblow",
     "Marshall Erwood",
     "Nicholas Kergozou De La Boessiere",
-    "Samantha Donnell",
+    "Samantha Donnelly",
     "Thomas Sexton",
 ]
 
@@ -92,7 +92,7 @@ def load_athlete_data(athlete, weeks):
             SELECT
                 USER_NAME_FIXED, WORKOUT_TYPE, START_TIME,
                 POWER_ZONE_LABEL, POWER_ZONE_MINIMUM, POWER_ZONE_MAXIMUM,
-                POWER_ZONE_SECONDS, TSS, ENERGY
+                POWER_ZONE_SECONDS, TSB, TSS, ENERGY
             FROM TRAINING_PEAKS_CYCLING_VW
             WHERE USER_NAME_FIXED = %s
               AND START_TIME >= DATEADD(week, %s, CURRENT_DATE())
@@ -129,6 +129,7 @@ with col2:
 
 # ── Load athlete data ──────────────────────────────────────────────────────────
 # Safe defaults so tab code never hits NameError
+df_raw = pd.DataFrame()
 df_athlete_data_zones = pd.DataFrame()
 df_athlete_data_zones_restrict = pd.DataFrame()
 current_week_start = pd.Timestamp.now().normalize()
@@ -150,35 +151,40 @@ if selected_athlete:
         )
     elif not df_raw.empty:
         st.warning("POWER_ZONE_LABEL column not found in the data.")
-
+df_raw
 # Add WEEK column - week starts on Monday, current week = 0
-if not df_athlete_data_zones.empty:
+if not df_raw.empty:
     # Define the start of the current week (Monday of this week)
     today = pd.Timestamp.now().normalize()
     days_since_monday = today.weekday()  # Monday = 0, Sunday = 6
     current_week_start = today - pd.Timedelta(days=days_since_monday)
-    
-    # Calculate week number for each row
-    # For each date, find its Monday (start of its week), then count weeks from current Monday
-    df_athlete_data_zones['WEEKS_PAST'] = df_athlete_data_zones['START_TIME'].apply(
-        lambda x: (current_week_start - (pd.Timestamp(x).normalize() - pd.Timedelta(days=pd.Timestamp(x).weekday()))).days // 7
-    )
-    
-    # Reorder columns to put WEEKS_PAST in 7th position
-    cols = df_athlete_data_zones.columns.tolist()
-    if 'WEEKS_PAST' in cols:
-        cols.remove('WEEKS_PAST')
-        cols.insert(6, 'WEEKS_PAST')  # 7th position (0-indexed is 6)
-        df_athlete_data_zones = df_athlete_data_zones[cols]
-    
+
+    def _weeks_past(ts):
+        ts = pd.Timestamp(ts).normalize()
+        return (current_week_start - (ts - pd.Timedelta(days=ts.weekday()))).days // 7
+
+    df_raw['WEEKS_PAST'] = df_raw['START_TIME'].apply(_weeks_past)
+
+    if not df_athlete_data_zones.empty:
+        df_athlete_data_zones['WEEKS_PAST'] = df_athlete_data_zones['START_TIME'].apply(_weeks_past)
+
+        # Reorder columns to put WEEKS_PAST in 7th position
+        cols = df_athlete_data_zones.columns.tolist()
+        if 'WEEKS_PAST' in cols:
+            cols.remove('WEEKS_PAST')
+            cols.insert(6, 'WEEKS_PAST')
+            df_athlete_data_zones = df_athlete_data_zones[cols]
+
     # Filter to show only recent weeks (1 to weeks)
-    recent_weeks = list(range(1, weeks + 1))  # weeks 1 to N
-    
+    recent_weeks = list(range(1, weeks + 1))
+
+    df_raw_restrict = df_raw[df_raw['WEEKS_PAST'].isin(recent_weeks)].copy()
+
     df_athlete_data_zones_restrict = df_athlete_data_zones[
         df_athlete_data_zones['WEEKS_PAST'].isin(recent_weeks)
-    ].copy()
-# df_athlete_data_zones
-# df_athlete_data_zones_restrict
+    ].copy() if not df_athlete_data_zones.empty else pd.DataFrame()
+else:
+    df_raw_restrict = pd.DataFrame()
 # Create tabs for different chart types
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["Training Time", "TSS", "Energy (kJ)", "Power Zones", "Power Zones %"])
 
@@ -338,10 +344,10 @@ with tab1:
 
 # TAB 2: Weekly TSS
 with tab2:
-    if not df_athlete_data_zones_restrict.empty and 'TSS' in df_athlete_data_zones_restrict.columns:
+    if not df_raw_restrict.empty and 'TSS' in df_raw_restrict.columns:
         
-        # Group by weeks and sum the TSS for restricted data
-        weekly_tss = df_athlete_data_zones_restrict.groupby('WEEKS_PAST')['TSS'].sum().reset_index()
+        # Group by weeks and sum the TSS for restricted data (all sessions, not just power-zone ones)
+        weekly_tss = df_raw_restrict.groupby('WEEKS_PAST')['TSS'].sum().reset_index()
         weekly_tss['TSS'] = weekly_tss['TSS'].round(1)
         
         # Calculate the Monday date for each week
@@ -352,10 +358,10 @@ with tab2:
         # Sort by weeks_past for proper display
         weekly_tss = weekly_tss.sort_values('WEEKS_PAST')
     
-        # Calculate rolling averages from the original (unrestricted) data
-        if not df_athlete_data_zones.empty:
+        # Calculate rolling averages from the full unrestricted raw data
+        if not df_raw.empty:
             # Group all data by weeks and sum the TSS
-            all_weekly_tss = df_athlete_data_zones.groupby('WEEKS_PAST')['TSS'].sum().reset_index()
+            all_weekly_tss = df_raw.groupby('WEEKS_PAST')['TSS'].sum().reset_index()
             all_weekly_tss['TSS'] = all_weekly_tss['TSS'].round(1)
             all_weekly_tss = all_weekly_tss.sort_values('WEEKS_PAST')
             
@@ -427,7 +433,7 @@ with tab2:
         ))
         
         # Add rolling average lines if data exists
-        if not df_athlete_data_zones.empty and len(rolling_avg_tss_display) > 0:
+        if not df_raw.empty and len(rolling_avg_tss_display) > 0:
             fig_tss.add_trace(go.Scatter(
                 x=rolling_avg_tss_display['WEEK_START_DATE'],
                 y=rolling_avg_tss_display['ROLLING_4WK_AVG'],
