@@ -92,7 +92,7 @@ def load_athlete_data(athlete, weeks):
             SELECT
                 USER_NAME_FIXED, WORKOUT_TYPE, START_TIME,
                 POWER_ZONE_LABEL, POWER_ZONE_MINIMUM, POWER_ZONE_MAXIMUM,
-                POWER_ZONE_SECONDS, TSB, TSS, ENERGY
+                POWER_ZONE_SECONDS, DURATION_MINS, TSS, ENERGY
             FROM TRAINING_PEAKS_CYCLING_VW
             WHERE USER_NAME_FIXED = %s
               AND START_TIME >= DATEADD(week, %s, CURRENT_DATE())
@@ -190,13 +190,14 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["Training Time", "TSS", "Energy (kJ)", "
 
 # TAB 1: Weekly Training Time
 with tab1:
-    if not df_athlete_data_zones_restrict.empty and 'POWER_ZONE_SECONDS' in df_athlete_data_zones_restrict.columns:
+    if not df_raw_restrict.empty and 'DURATION_MINS' in df_raw_restrict.columns:
         
-        # Group by weeks and sum the power zone seconds for restricted data
-        weekly_time = df_athlete_data_zones_restrict.groupby('WEEKS_PAST')['POWER_ZONE_SECONDS'].sum().reset_index()
-        
-        # Convert seconds to hours and round to 2 decimal places
-        weekly_time['HOURS'] = (weekly_time['POWER_ZONE_SECONDS'] / 3600).round(2)
+        # Sum DURATION_MINS across all activities — only populated on the workout-level row, not per-zone rows
+        weekly_time = (
+            df_raw_restrict
+            .groupby('WEEKS_PAST')['DURATION_MINS'].sum().reset_index()
+        )
+        weekly_time['HOURS'] = (weekly_time['DURATION_MINS'] / 60).round(2)
         
         # Calculate the Monday date for each week
         weekly_time['WEEK_START_DATE'] = weekly_time['WEEKS_PAST'].apply(
@@ -207,11 +208,14 @@ with tab1:
         weekly_time = weekly_time.sort_values('WEEKS_PAST')
     
     # Calculate rolling 4-week average from the original (unrestricted) data
-    if not df_athlete_data_zones_restrict.empty and 'POWER_ZONE_SECONDS' in df_athlete_data_zones_restrict.columns and not df_athlete_data_zones.empty:
-        # Group all data by weeks and sum the power zone seconds
-        all_weekly_time = df_athlete_data_zones.groupby('WEEKS_PAST')['POWER_ZONE_SECONDS'].sum().reset_index()
-        all_weekly_time['HOURS'] = (all_weekly_time['POWER_ZONE_SECONDS'] / 3600).round(2)
-        all_weekly_time = all_weekly_time.sort_values('WEEKS_PAST')
+    if not df_raw_restrict.empty and 'DURATION_MINS' in df_raw_restrict.columns and not df_raw.empty:
+        # Sum DURATION_MINS across all activities — only populated on the workout-level row, not per-zone rows
+        all_weekly_time = (
+            df_raw
+            .groupby('WEEKS_PAST')['DURATION_MINS'].sum().reset_index()
+        )
+        all_weekly_time['HOURS'] = (all_weekly_time['DURATION_MINS'] / 60).round(2)
+        all_weekly_time = all_weekly_time.sort_values('WEEKS_PAST', ascending=False)
         
         # Calculate 4-week rolling average
         all_weekly_time['ROLLING_4WK_AVG'] = all_weekly_time['HOURS'].rolling(window=4, min_periods=1).mean().round(2)
@@ -268,6 +272,19 @@ with tab1:
         
         all_weekly_time['ROLLING_8WK_LOG_AVG'] = log_rolling_8week(all_weekly_time['HOURS']).round(2)
         
+        # HH:mm formatted columns for tooltips
+        def _fmt_hhmm(h):
+            if pd.isna(h):
+                return ''
+            total_mins = round(h * 60)
+            return f"{total_mins // 60}:{total_mins % 60:02d}"
+        
+        weekly_time['HOURS_HHMM'] = weekly_time['HOURS'].apply(_fmt_hhmm)
+        all_weekly_time['HOURS_HHMM'] = all_weekly_time['HOURS'].apply(_fmt_hhmm)
+        all_weekly_time['ROLLING_4WK_HHMM'] = all_weekly_time['ROLLING_4WK_AVG'].apply(_fmt_hhmm)
+        all_weekly_time['ROLLING_8WK_WEIGHTED_HHMM'] = all_weekly_time['ROLLING_8WK_WEIGHTED_AVG'].apply(_fmt_hhmm)
+        all_weekly_time['ROLLING_8WK_LOG_HHMM'] = all_weekly_time['ROLLING_8WK_LOG_AVG'].apply(_fmt_hhmm)
+        
         # Calculate week start dates for rolling average
         all_weekly_time['WEEK_START_DATE'] = all_weekly_time['WEEKS_PAST'].apply(
             lambda weeks_back: current_week_start - pd.Timedelta(weeks=weeks_back)
@@ -288,11 +305,12 @@ with tab1:
             y=weekly_time['HOURS'],
             name='Weekly Hours',
             marker_color='lightblue',
-            hovertemplate='Hours: %{y}<extra></extra>'
+            customdata=weekly_time['HOURS_HHMM'],
+            hovertemplate='Hours: %{customdata}<extra></extra>'
         ))
         
         # Add rolling average lines if data exists
-        if not df_athlete_data_zones.empty and len(rolling_avg_display) > 0:
+        if not df_raw.empty and len(rolling_avg_display) > 0:
             # 4-week rolling average
             fig.add_trace(go.Scatter(
                 x=rolling_avg_display['WEEK_START_DATE'],
@@ -301,7 +319,8 @@ with tab1:
                 name='4-Week Rolling Average',
                 line=dict(color='red', width=3),
                 marker=dict(size=6),
-                hovertemplate='4-Week Avg: %{y} hours<extra></extra>'
+                customdata=rolling_avg_display['ROLLING_4WK_HHMM'],
+                hovertemplate='4-Week Avg: %{customdata}<extra></extra>'
             ))
             
             # 8-week centrally weighted rolling average
@@ -312,7 +331,8 @@ with tab1:
                 name='8-Week Weighted Average',
                 line=dict(color='green', width=3),
                 marker=dict(size=6),
-                hovertemplate='8-Week Weighted Avg: %{y} hours<extra></extra>'
+                customdata=rolling_avg_display['ROLLING_8WK_WEIGHTED_HHMM'],
+                hovertemplate='8-Week Weighted Avg: %{customdata}<extra></extra>'
             ))
             
             # 8-week log average
@@ -323,7 +343,8 @@ with tab1:
                 name='8-Week Log Average',
                 line=dict(color='purple', width=3),
                 marker=dict(size=6),
-                hovertemplate='8-Week Log Avg: %{y} hours<extra></extra>'
+                customdata=rolling_avg_display['ROLLING_8WK_LOG_HHMM'],
+                hovertemplate='8-Week Log Avg: %{customdata}<extra></extra>'
             ))
         
         # Update layout for better appearance
@@ -498,7 +519,7 @@ with tab3:
             # Group all data by weeks and sum the ENERGY
             all_weekly_energy = df_athlete_data_zones.groupby('WEEKS_PAST')['ENERGY'].sum().reset_index()
             all_weekly_energy['ENERGY_KJ'] = (all_weekly_energy['ENERGY'] / 1000).round(1)
-            all_weekly_energy = all_weekly_energy.sort_values('WEEKS_PAST')
+            all_weekly_energy = all_weekly_energy.sort_values('WEEKS_PAST', ascending=False)
             
             # Calculate rolling averages
             all_weekly_energy['ROLLING_4WK_AVG'] = all_weekly_energy['ENERGY_KJ'].rolling(window=4, min_periods=1).mean().round(1)
