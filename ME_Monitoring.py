@@ -174,7 +174,7 @@ if not df_raw.empty:
             cols.remove('WEEKS_PAST')
             cols.insert(6, 'WEEKS_PAST')
             df_athlete_data_zones = df_athlete_data_zones[cols]
-    df_raw
+    
     # Filter to show only recent weeks (1 to weeks)
     recent_weeks = list(range(1, weeks + 1))
 
