@@ -70,6 +70,7 @@ ATHLETES = [
     "Ally Wollaston",
     "Bryony Botha",
     "Emily Shearman",
+    "George Jackson",
     "Jessie Hodges",
     "Keegan Hornblow",
     "Marshall Erwood",
@@ -89,12 +90,15 @@ def load_athlete_data(athlete, weeks):
     conn = _get_snowflake_conn()
     try:
         query = """
-            SELECT
-                USER_NAME_FIXED, WORKOUT_TYPE, START_TIME,
-                POWER_ZONE_LABEL, POWER_ZONE_MINIMUM, POWER_ZONE_MAXIMUM,
-                POWER_ZONE_SECONDS, DURATION_MINS, TSS, ENERGY
+            SELECT 
+            USER_NAME_FIXED, WORKOUT_TYPE, START_TIME,
+            POWER_ZONE_LABEL, POWER_ZONE_MINIMUM, POWER_ZONE_MAXIMUM,
+            POWER_ZONE_SECONDS, DURATION_MINS, TSS, ENERGY,
+            TOTAL_TIME_PLANNED, ENERGY_PLANNED, TSS_PLANNED,
+            DESCRIPTION
             FROM TRAINING_PEAKS_CYCLING_VW
             WHERE USER_NAME_FIXED = %s
+            
               AND START_TIME >= DATEADD(week, %s, CURRENT_DATE())
             ORDER BY START_TIME DESC
         """
@@ -114,7 +118,7 @@ def load_athlete_data(athlete, weeks):
 
 
 # ── UI components ──────────────────────────────────────────────────────────────
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([3, 3, 2])
 
 with col1:
     try:
@@ -126,6 +130,10 @@ with col1:
 
 with col2:
     weeks = st.slider("Select number of past weeks", min_value=4, max_value=52, value=12, step=1)
+
+with col3:
+    st.write("")
+    bike_only = st.toggle("Bike only", value=False)
 
 # ── Load athlete data ──────────────────────────────────────────────────────────
 # Safe defaults so tab code never hits NameError
@@ -183,10 +191,24 @@ if not df_raw.empty:
     df_athlete_data_zones_restrict = df_athlete_data_zones[
         df_athlete_data_zones['WEEKS_PAST'].isin(recent_weeks)
     ].copy() if not df_athlete_data_zones.empty else pd.DataFrame()
+
+    # Strength data captured before bike-only filter so it's always shown regardless of toggle
+    df_strength_restrict = df_raw_restrict[df_raw_restrict['WORKOUT_TYPE'] == 'Strength'].copy()
+
+    # Apply bike-only filter if selected (MTB and Bike sessions only)
+    if bike_only:
+        _bike_types = ['MTB', 'Bike']
+        df_raw = df_raw[df_raw['WORKOUT_TYPE'].isin(_bike_types)].copy()
+        df_raw_restrict = df_raw_restrict[df_raw_restrict['WORKOUT_TYPE'].isin(_bike_types)].copy()
+        if not df_athlete_data_zones.empty:
+            df_athlete_data_zones = df_athlete_data_zones[df_athlete_data_zones['WORKOUT_TYPE'].isin(_bike_types)].copy()
+        if not df_athlete_data_zones_restrict.empty:
+            df_athlete_data_zones_restrict = df_athlete_data_zones_restrict[df_athlete_data_zones_restrict['WORKOUT_TYPE'].isin(_bike_types)].copy()
 else:
     df_raw_restrict = pd.DataFrame()
+
 # Create tabs for different chart types
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Training Time", "TSS", "Energy (kJ)", "Power Zones", "Power Zones %"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Training Time", "TSS", "Energy (kJ)", "Strength", "Power Zones", "Power Zones %"])
 
 # TAB 1: Weekly Training Time
 with tab1:
@@ -210,9 +232,17 @@ with tab1:
     # Calculate rolling 4-week average from the original (unrestricted) data
     if not df_raw_restrict.empty and 'DURATION_MINS' in df_raw_restrict.columns and not df_raw.empty:
         # Sum DURATION_MINS across all activities — only populated on the workout-level row, not per-zone rows
+        # Exclude WEEKS_PAST=0 (current partial week) so it doesn't skew rolling averages
         all_weekly_time = (
-            df_raw
+            df_raw[df_raw['WEEKS_PAST'] >= 1]
             .groupby('WEEKS_PAST')['DURATION_MINS'].sum().reset_index()
+        )
+        # Fill weeks with no activity as zero so rolling averages treat them as rest weeks
+        _max_wp = int(df_raw[df_raw['WEEKS_PAST'] >= 1]['WEEKS_PAST'].max())
+        all_weekly_time = (
+            all_weekly_time.set_index('WEEKS_PAST')
+            .reindex(range(1, _max_wp + 1), fill_value=0)
+            .reset_index()
         )
         all_weekly_time['HOURS'] = (all_weekly_time['DURATION_MINS'] / 60).round(2)
         all_weekly_time = all_weekly_time.sort_values('WEEKS_PAST', ascending=False)
@@ -284,7 +314,19 @@ with tab1:
         all_weekly_time['ROLLING_4WK_HHMM'] = all_weekly_time['ROLLING_4WK_AVG'].apply(_fmt_hhmm)
         all_weekly_time['ROLLING_8WK_WEIGHTED_HHMM'] = all_weekly_time['ROLLING_8WK_WEIGHTED_AVG'].apply(_fmt_hhmm)
         all_weekly_time['ROLLING_8WK_LOG_HHMM'] = all_weekly_time['ROLLING_8WK_LOG_AVG'].apply(_fmt_hhmm)
-        
+
+        # Weekly planned hours (TOTAL_TIME_PLANNED in seconds)
+        weekly_time_planned = (
+            df_raw_restrict.groupby('WEEKS_PAST')['TOTAL_TIME_PLANNED']
+            .sum().reset_index()
+        )
+        weekly_time_planned['HOURS_PLANNED'] = (weekly_time_planned['TOTAL_TIME_PLANNED'] / 3_600_000).round(2)
+        weekly_time_planned['HOURS_PLANNED_HHMM'] = weekly_time_planned['HOURS_PLANNED'].apply(_fmt_hhmm)
+        weekly_time_planned['WEEK_START_DATE'] = weekly_time_planned['WEEKS_PAST'].apply(
+            lambda weeks_back: current_week_start - pd.Timedelta(weeks=weeks_back)
+        )
+        weekly_time_planned = weekly_time_planned.sort_values('WEEKS_PAST')
+
         # Calculate week start dates for rolling average
         all_weekly_time['WEEK_START_DATE'] = all_weekly_time['WEEKS_PAST'].apply(
             lambda weeks_back: current_week_start - pd.Timedelta(weeks=weeks_back)
@@ -296,19 +338,37 @@ with tab1:
         ].copy()
     
         # Create the combined chart using plotly graph objects for more control
-        st.subheader("Weekly Training Time with Rolling Averages")
         fig = go.Figure()
         
         # Add bar chart for weekly hours
+        _sel_time_wp = st.session_state.get('sel_time_wp')
+        _time_colors = ['#4FC3F7' if wp == _sel_time_wp else 'lightblue' for wp in weekly_time['WEEKS_PAST']]
+        _time_borders = ['white' if wp == _sel_time_wp else 'rgba(0,0,0,0)' for wp in weekly_time['WEEKS_PAST']]
         fig.add_trace(go.Bar(
             x=weekly_time['WEEK_START_DATE'],
             y=weekly_time['HOURS'],
             name='Weekly Hours',
-            marker_color='lightblue',
+            marker_color=_time_colors,
+            marker_line_color=_time_borders,
+            marker_line_width=2,
             customdata=weekly_time['HOURS_HHMM'],
-            hovertemplate='Hours: %{customdata}<extra></extra>'
+            hovertemplate='Hours: %{customdata}<extra></extra>',
+            selected=dict(marker=dict(opacity=1)),
+            unselected=dict(marker=dict(opacity=1)),
         ))
-        
+
+        # Planned hours bar
+        fig.add_trace(go.Bar(
+            x=weekly_time_planned['WEEK_START_DATE'],
+            y=weekly_time_planned['HOURS_PLANNED'],
+            name='Planned Hours',
+            marker_color='rgba(79, 195, 247, 0.35)',
+            marker_line_color='#4FC3F7',
+            marker_line_width=2,
+            customdata=weekly_time_planned['HOURS_PLANNED_HHMM'],
+            hovertemplate='Planned: %{customdata}<extra></extra>',
+        ))
+
         # Add rolling average lines if data exists
         if not df_raw.empty and len(rolling_avg_display) > 0:
             # 4-week rolling average
@@ -350,16 +410,57 @@ with tab1:
         # Update layout for better appearance
         fig.update_layout(
             # title=f'Last {weeks} weeks',
-            xaxis_title="Week Starting (Monday)",
-            yaxis_title="Training Time (Hours)",
+            title="Weekly Training Time with Rolling Averages",
             showlegend=True,
-            hovermode='x unified'
+            hovermode='x unified',
+            barmode='group',
         )
         
         # Format x-axis to show dates nicely
         fig.update_xaxes(tickformat="%Y-%m-%d")
         
-        st.plotly_chart(fig, width='stretch')
+        sel_time = st.plotly_chart(fig, on_select="rerun", key="chart_time", width='stretch')
+
+        if sel_time.selection.points:
+            _cx = sel_time.selection.points[0]["x"]
+            _ct = pd.Timestamp(_cx).normalize()
+            _cm = _ct - pd.Timedelta(days=_ct.weekday())
+            _cwp = round((current_week_start - _cm).days / 7)
+            if st.session_state.get('sel_time_wp') != _cwp:
+                st.session_state['sel_time_wp'] = _cwp
+                st.rerun()
+
+        if st.session_state.get('sel_time_wp') is not None:
+            sel_wp = st.session_state['sel_time_wp']
+            sel_monday = current_week_start - pd.Timedelta(weeks=sel_wp)
+            week_sessions = df_raw_restrict[
+                (df_raw_restrict['WEEKS_PAST'] == sel_wp) &
+                df_raw_restrict['DURATION_MINS'].notna()
+            ].copy()
+            if not week_sessions.empty:
+                week_sessions['Date'] = pd.to_datetime(week_sessions['START_TIME']).dt.date
+                week_sessions['Duration'] = week_sessions['DURATION_MINS'].apply(
+                    lambda m: f"{int(m)//60}:{int(m)%60:02d}" if pd.notna(m) else ''
+                )
+                week_sessions['Planned Duration'] = week_sessions['TOTAL_TIME_PLANNED'].apply(
+                    lambda s: f"{int(s)//3_600_000}:{int(s)%3_600_000//60_000:02d}" if pd.notna(s) and s > 0 else ''
+                )
+                week_sessions['TSS'] = week_sessions['TSS'].round(1)
+                week_sessions['Planned TSS'] = week_sessions['TSS_PLANNED'].apply(
+                    lambda t: round(float(t), 1) if pd.notna(t) and float(t) > 0 else ''
+                )
+                week_sessions['Energy (kJ)'] = (week_sessions['ENERGY'] / 1000).round(1)
+                week_sessions['Planned Energy (kJ)'] = week_sessions['ENERGY_PLANNED'].apply(
+                    lambda e: round(float(e) / 1000, 1) if pd.notna(e) and float(e) > 0 else ''
+                )
+                week_sessions['Description'] = week_sessions['DESCRIPTION'].fillna('').astype(str).str.replace(r'<br\s*/?>', ' ', regex=True).str.strip()
+                tbl = week_sessions[['WORKOUT_TYPE', 'Date', 'Duration', 'Planned Duration', 'TSS', 'Planned TSS', 'Energy (kJ)', 'Planned Energy (kJ)', 'Description']].rename(
+                    columns={'WORKOUT_TYPE': 'Session'}
+                ).sort_values('Date').reset_index(drop=True)
+                st.markdown(f"**Sessions — w/c {sel_monday.strftime('%d %b %Y')}**")
+                st.dataframe(tbl, hide_index=True, use_container_width=True)
+            else:
+                st.info(f"No sessions found for w/c {sel_monday.strftime('%d %b %Y')}.")
     else:
         st.info("No data available for the selected athlete and time period.")
 
@@ -378,13 +479,35 @@ with tab2:
         
         # Sort by weeks_past for proper display
         weekly_tss = weekly_tss.sort_values('WEEKS_PAST')
-    
+
+        # Weekly planned TSS
+        weekly_tss_planned = (
+            df_raw_restrict.groupby('WEEKS_PAST')['TSS_PLANNED']
+            .sum().reset_index()
+        )
+        weekly_tss_planned['TSS_PLANNED'] = weekly_tss_planned['TSS_PLANNED'].round(1)
+        weekly_tss_planned['WEEK_START_DATE'] = weekly_tss_planned['WEEKS_PAST'].apply(
+            lambda weeks_back: current_week_start - pd.Timedelta(weeks=weeks_back)
+        )
+        weekly_tss_planned = weekly_tss_planned.sort_values('WEEKS_PAST')
+
         # Calculate rolling averages from the full unrestricted raw data
         if not df_raw.empty:
             # Group all data by weeks and sum the TSS
-            all_weekly_tss = df_raw.groupby('WEEKS_PAST')['TSS'].sum().reset_index()
+            # Exclude WEEKS_PAST=0 (current partial week) so it doesn't skew rolling averages
+            all_weekly_tss = (
+                df_raw[df_raw['WEEKS_PAST'] >= 1]
+                .groupby('WEEKS_PAST')['TSS'].sum().reset_index()
+            )
+            # Fill weeks with no activity as zero so rolling averages treat them as rest weeks
+            _max_wp_tss = int(df_raw[df_raw['WEEKS_PAST'] >= 1]['WEEKS_PAST'].max())
+            all_weekly_tss = (
+                all_weekly_tss.set_index('WEEKS_PAST')
+                .reindex(range(1, _max_wp_tss + 1), fill_value=0)
+                .reset_index()
+            )
             all_weekly_tss['TSS'] = all_weekly_tss['TSS'].round(1)
-            all_weekly_tss = all_weekly_tss.sort_values('WEEKS_PAST')
+            all_weekly_tss = all_weekly_tss.sort_values('WEEKS_PAST', ascending=False)
             
             # Calculate rolling averages
             all_weekly_tss['ROLLING_4WK_AVG'] = all_weekly_tss['TSS'].rolling(window=4, min_periods=1).mean().round(1)
@@ -441,18 +564,35 @@ with tab2:
             ].copy()
         
         # Create TSS chart
-        st.subheader("Weekly TSS with Rolling Averages")
         fig_tss = go.Figure()
         
         # Add bar chart for weekly TSS
+        _sel_tss_wp = st.session_state.get('sel_tss_wp')
+        _tss_colors = ['#FF6B6B' if wp == _sel_tss_wp else 'lightcoral' for wp in weekly_tss['WEEKS_PAST']]
+        _tss_borders = ['white' if wp == _sel_tss_wp else 'rgba(0,0,0,0)' for wp in weekly_tss['WEEKS_PAST']]
         fig_tss.add_trace(go.Bar(
             x=weekly_tss['WEEK_START_DATE'],
             y=weekly_tss['TSS'],
             name='Weekly TSS',
-            marker_color='lightcoral',
-            hovertemplate='TSS: %{y}<extra></extra>'
+            marker_color=_tss_colors,
+            marker_line_color=_tss_borders,
+            marker_line_width=2,
+            hovertemplate='TSS: %{y}<extra></extra>',
+            selected=dict(marker=dict(opacity=1)),
+            unselected=dict(marker=dict(opacity=1)),
         ))
-        
+
+        # Planned TSS bar
+        fig_tss.add_trace(go.Bar(
+            x=weekly_tss_planned['WEEK_START_DATE'],
+            y=weekly_tss_planned['TSS_PLANNED'],
+            name='Planned TSS',
+            marker_color='rgba(255, 107, 107, 0.35)',
+            marker_line_color='#FF6B6B',
+            marker_line_width=2,
+            hovertemplate='Planned TSS: %{y}<extra></extra>',
+        ))
+
         # Add rolling average lines if data exists
         if not df_raw.empty and len(rolling_avg_tss_display) > 0:
             fig_tss.add_trace(go.Scatter(
@@ -487,14 +627,55 @@ with tab2:
         
         fig_tss.update_layout(
             # title=f'Last {weeks} weeks',
-            xaxis_title="Week Starting (Monday)",
-            yaxis_title="TSS",
+            title="Weekly TSS with Rolling Averages",
             showlegend=True,
-            hovermode='x unified'
+            hovermode='x unified',
+            barmode='group',
         )
         
         fig_tss.update_xaxes(tickformat="%Y-%m-%d")
-        st.plotly_chart(fig_tss, width='stretch')
+        sel_tss = st.plotly_chart(fig_tss, on_select="rerun", key="chart_tss", width='stretch')
+
+        if sel_tss.selection.points:
+            _cx = sel_tss.selection.points[0]["x"]
+            _ct = pd.Timestamp(_cx).normalize()
+            _cm = _ct - pd.Timedelta(days=_ct.weekday())
+            _cwp = round((current_week_start - _cm).days / 7)
+            if st.session_state.get('sel_tss_wp') != _cwp:
+                st.session_state['sel_tss_wp'] = _cwp
+                st.rerun()
+
+        if st.session_state.get('sel_tss_wp') is not None:
+            sel_wp = st.session_state['sel_tss_wp']
+            sel_monday = current_week_start - pd.Timedelta(weeks=sel_wp)
+            week_sessions = df_raw_restrict[
+                (df_raw_restrict['WEEKS_PAST'] == sel_wp) &
+                df_raw_restrict['DURATION_MINS'].notna()
+            ].copy()
+            if not week_sessions.empty:
+                week_sessions['Date'] = pd.to_datetime(week_sessions['START_TIME']).dt.date
+                week_sessions['Duration'] = week_sessions['DURATION_MINS'].apply(
+                    lambda m: f"{int(m)//60}:{int(m)%60:02d}" if pd.notna(m) else ''
+                )
+                week_sessions['Planned Duration'] = week_sessions['TOTAL_TIME_PLANNED'].apply(
+                    lambda s: f"{int(s)//3_600_000}:{int(s)%3_600_000//60_000:02d}" if pd.notna(s) and s > 0 else ''
+                )
+                week_sessions['TSS'] = week_sessions['TSS'].round(1)
+                week_sessions['Planned TSS'] = week_sessions['TSS_PLANNED'].apply(
+                    lambda t: round(float(t), 1) if pd.notna(t) and float(t) > 0 else ''
+                )
+                week_sessions['Energy (kJ)'] = (week_sessions['ENERGY'] / 1000).round(1)
+                week_sessions['Planned Energy (kJ)'] = week_sessions['ENERGY_PLANNED'].apply(
+                    lambda e: round(float(e) / 1000, 1) if pd.notna(e) and float(e) > 0 else ''
+                )
+                week_sessions['Description'] = week_sessions['DESCRIPTION'].fillna('').astype(str).str.replace(r'<br\s*/?>', ' ', regex=True).str.strip()
+                tbl = week_sessions[['WORKOUT_TYPE', 'Date', 'Duration', 'Planned Duration', 'TSS', 'Planned TSS', 'Energy (kJ)', 'Planned Energy (kJ)', 'Description']].rename(
+                    columns={'WORKOUT_TYPE': 'Session'}
+                ).sort_values('Date').reset_index(drop=True)
+                st.markdown(f"**Sessions — w/c {sel_monday.strftime('%d %b %Y')}**")
+                st.dataframe(tbl, hide_index=True, use_container_width=True)
+            else:
+                st.info(f"No sessions found for w/c {sel_monday.strftime('%d %b %Y')}.")
     else:
         st.info("No data available for the selected athlete and time period.")
 
@@ -513,11 +694,32 @@ with tab3:
         
         # Sort by weeks_past for proper display
         weekly_energy = weekly_energy.sort_values('WEEKS_PAST')
-        
+
+        # Weekly planned energy (ENERGY_PLANNED is session-level, aggregate from df_raw_restrict)
+        weekly_energy_planned = (
+            df_raw_restrict.groupby('WEEKS_PAST')['ENERGY_PLANNED']
+            .sum().reset_index()
+        )
+        weekly_energy_planned['ENERGY_PLANNED_KJ'] = (weekly_energy_planned['ENERGY_PLANNED'] / 1000).round(1)
+        weekly_energy_planned['WEEK_START_DATE'] = weekly_energy_planned['WEEKS_PAST'].apply(
+            lambda weeks_back: current_week_start - pd.Timedelta(weeks=weeks_back)
+        )
+        weekly_energy_planned = weekly_energy_planned.sort_values('WEEKS_PAST')
+
         # Calculate rolling averages from the original (unrestricted) data
         if not df_athlete_data_zones.empty:
-            # Group all data by weeks and sum the ENERGY
-            all_weekly_energy = df_athlete_data_zones.groupby('WEEKS_PAST')['ENERGY'].sum().reset_index()
+            # Group all data by weeks and sum the ENERGY (exclude partial current week)
+            all_weekly_energy = (
+                df_athlete_data_zones[df_athlete_data_zones['WEEKS_PAST'] >= 1]
+                .groupby('WEEKS_PAST')['ENERGY'].sum().reset_index()
+            )
+            # Fill weeks with no activity as zero so rolling averages treat them as rest weeks
+            _max_wp_energy = int(df_athlete_data_zones[df_athlete_data_zones['WEEKS_PAST'] >= 1]['WEEKS_PAST'].max())
+            all_weekly_energy = (
+                all_weekly_energy.set_index('WEEKS_PAST')
+                .reindex(range(1, _max_wp_energy + 1), fill_value=0)
+                .reset_index()
+            )
             all_weekly_energy['ENERGY_KJ'] = (all_weekly_energy['ENERGY'] / 1000).round(1)
             all_weekly_energy = all_weekly_energy.sort_values('WEEKS_PAST', ascending=False)
             
@@ -576,18 +778,35 @@ with tab3:
             ].copy()
         
         # Create Energy chart
-        st.subheader("Weekly Energy (kJ) with Rolling Averages")
         fig_energy = go.Figure()
         
         # Add bar chart for weekly energy
+        _sel_energy_wp = st.session_state.get('sel_energy_wp')
+        _energy_colors = ['#66FF99' if wp == _sel_energy_wp else 'lightgreen' for wp in weekly_energy['WEEKS_PAST']]
+        _energy_borders = ['white' if wp == _sel_energy_wp else 'rgba(0,0,0,0)' for wp in weekly_energy['WEEKS_PAST']]
         fig_energy.add_trace(go.Bar(
             x=weekly_energy['WEEK_START_DATE'],
             y=weekly_energy['ENERGY_KJ'],
             name='Weekly Energy (kJ)',
-            marker_color='lightgreen',
-            hovertemplate='Energy: %{y} kJ<extra></extra>'
+            marker_color=_energy_colors,
+            marker_line_color=_energy_borders,
+            marker_line_width=2,
+            hovertemplate='Energy: %{y} kJ<extra></extra>',
+            selected=dict(marker=dict(opacity=1)),
+            unselected=dict(marker=dict(opacity=1)),
         ))
-        
+
+        # Planned energy bar
+        fig_energy.add_trace(go.Bar(
+            x=weekly_energy_planned['WEEK_START_DATE'],
+            y=weekly_energy_planned['ENERGY_PLANNED_KJ'],
+            name='Planned Energy (kJ)',
+            marker_color='rgba(102, 255, 153, 0.35)',
+            marker_line_color='#66FF99',
+            marker_line_width=2,
+            hovertemplate='Planned Energy: %{y} kJ<extra></extra>',
+        ))
+
         # Add rolling average lines if data exists
         if not df_athlete_data_zones.empty and len(rolling_avg_energy_display) > 0:
             fig_energy.add_trace(go.Scatter(
@@ -622,19 +841,164 @@ with tab3:
         
         fig_energy.update_layout(
             # title=f'Last {weeks} weeks',
-            xaxis_title="Week Starting (Monday)",
-            yaxis_title="Energy (kJ)",
+            title="Weekly Energy (kJ) with Rolling Averages",
             showlegend=True,
-            hovermode='x unified'
+            hovermode='x unified',
+            barmode='group',
         )
         
         fig_energy.update_xaxes(tickformat="%Y-%m-%d")
-        st.plotly_chart(fig_energy, width='stretch')
+        sel_energy = st.plotly_chart(fig_energy, on_select="rerun", key="chart_energy", width='stretch')
+
+        if sel_energy.selection.points:
+            _cx = sel_energy.selection.points[0]["x"]
+            _ct = pd.Timestamp(_cx).normalize()
+            _cm = _ct - pd.Timedelta(days=_ct.weekday())
+            _cwp = round((current_week_start - _cm).days / 7)
+            if st.session_state.get('sel_energy_wp') != _cwp:
+                st.session_state['sel_energy_wp'] = _cwp
+                st.rerun()
+
+        if st.session_state.get('sel_energy_wp') is not None:
+            sel_wp = st.session_state['sel_energy_wp']
+            sel_monday = current_week_start - pd.Timedelta(weeks=sel_wp)
+            week_sessions = df_raw_restrict[
+                (df_raw_restrict['WEEKS_PAST'] == sel_wp) &
+                df_raw_restrict['DURATION_MINS'].notna()
+            ].copy()
+            if not week_sessions.empty:
+                week_sessions['Date'] = pd.to_datetime(week_sessions['START_TIME']).dt.date
+                week_sessions['Duration'] = week_sessions['DURATION_MINS'].apply(
+                    lambda m: f"{int(m)//60}:{int(m)%60:02d}" if pd.notna(m) else ''
+                )
+                week_sessions['Planned Duration'] = week_sessions['TOTAL_TIME_PLANNED'].apply(
+                    lambda s: f"{int(s)//3_600_000}:{int(s)%3_600_000//60_000:02d}" if pd.notna(s) and s > 0 else ''
+                )
+                week_sessions['TSS'] = week_sessions['TSS'].round(1)
+                week_sessions['Planned TSS'] = week_sessions['TSS_PLANNED'].apply(
+                    lambda t: round(float(t), 1) if pd.notna(t) and float(t) > 0 else ''
+                )
+                week_sessions['Energy (kJ)'] = (week_sessions['ENERGY'] / 1000).round(1)
+                week_sessions['Planned Energy (kJ)'] = week_sessions['ENERGY_PLANNED'].apply(
+                    lambda e: round(float(e) / 1000, 1) if pd.notna(e) and float(e) > 0 else ''
+                )
+                week_sessions['Description'] = week_sessions['DESCRIPTION'].fillna('').astype(str).str.replace(r'<br\s*/?>', ' ', regex=True).str.strip()
+                tbl = week_sessions[['WORKOUT_TYPE', 'Date', 'Duration', 'Planned Duration', 'TSS', 'Planned TSS', 'Energy (kJ)', 'Planned Energy (kJ)', 'Description']].rename(
+                    columns={'WORKOUT_TYPE': 'Session'}
+                ).sort_values('Date').reset_index(drop=True)
+                st.markdown(f"**Sessions — w/c {sel_monday.strftime('%d %b %Y')}**")
+                st.dataframe(tbl, hide_index=True, use_container_width=True)
+            else:
+                st.info(f"No sessions found for w/c {sel_monday.strftime('%d %b %Y')}.")
     else:
         st.info("No data available for the selected athlete and time period.")
 
-# TAB 4: Power Zone Distribution (Raw)
+# TAB 4: Strength Duration
 with tab4:
+    if not df_strength_restrict.empty and 'DURATION_MINS' in df_strength_restrict.columns:
+        # Sum actual duration per week
+        weekly_strength = (
+            df_strength_restrict
+            .groupby('WEEKS_PAST')['DURATION_MINS'].sum().reset_index()
+        )
+        weekly_strength['HOURS'] = (weekly_strength['DURATION_MINS'] / 60).round(2)
+        weekly_strength['WEEK_START_DATE'] = weekly_strength['WEEKS_PAST'].apply(
+            lambda weeks_back: current_week_start - pd.Timedelta(weeks=weeks_back)
+        )
+        weekly_strength['HOURS_HHMM'] = weekly_strength['HOURS'].apply(
+            lambda h: f"{round(h*60)//60}:{round(h*60)%60:02d}" if pd.notna(h) else ''
+        )
+        weekly_strength = weekly_strength.sort_values('WEEKS_PAST')
+
+        # Sum planned duration per week (TOTAL_TIME_PLANNED in ms)
+        weekly_strength_planned = (
+            df_strength_restrict.groupby('WEEKS_PAST')['TOTAL_TIME_PLANNED']
+            .sum().reset_index()
+        )
+        weekly_strength_planned['HOURS_PLANNED'] = (weekly_strength_planned['TOTAL_TIME_PLANNED'] / 3_600_000).round(2)
+        weekly_strength_planned['HOURS_PLANNED_HHMM'] = weekly_strength_planned['HOURS_PLANNED'].apply(
+            lambda h: f"{round(h*60)//60}:{round(h*60)%60:02d}" if pd.notna(h) else ''
+        )
+        weekly_strength_planned['WEEK_START_DATE'] = weekly_strength_planned['WEEKS_PAST'].apply(
+            lambda weeks_back: current_week_start - pd.Timedelta(weeks=weeks_back)
+        )
+        weekly_strength_planned = weekly_strength_planned.sort_values('WEEKS_PAST')
+
+        fig_strength = go.Figure()
+
+        _sel_strength_wp = st.session_state.get('sel_strength_wp')
+        _strength_colors = ['#FFA07A' if wp == _sel_strength_wp else 'lightsalmon' for wp in weekly_strength['WEEKS_PAST']]
+        _strength_borders = ['white' if wp == _sel_strength_wp else 'rgba(0,0,0,0)' for wp in weekly_strength['WEEKS_PAST']]
+        fig_strength.add_trace(go.Bar(
+            x=weekly_strength['WEEK_START_DATE'],
+            y=weekly_strength['HOURS'],
+            name='Actual Duration',
+            marker_color=_strength_colors,
+            marker_line_color=_strength_borders,
+            marker_line_width=2,
+            customdata=weekly_strength['HOURS_HHMM'],
+            hovertemplate='Duration: %{customdata}<extra></extra>',
+            selected=dict(marker=dict(opacity=1)),
+            unselected=dict(marker=dict(opacity=1)),
+        ))
+
+        fig_strength.add_trace(go.Bar(
+            x=weekly_strength_planned['WEEK_START_DATE'],
+            y=weekly_strength_planned['HOURS_PLANNED'],
+            name='Planned Duration',
+            marker_color='rgba(255, 160, 122, 0.35)',
+            marker_line_color='#FFA07A',
+            marker_line_width=2,
+            customdata=weekly_strength_planned['HOURS_PLANNED_HHMM'],
+            hovertemplate='Planned: %{customdata}<extra></extra>',
+        ))
+
+        fig_strength.update_layout(
+            title="Weekly Strength Duration",
+            showlegend=True,
+            hovermode='x unified',
+            barmode='group',
+        )
+        fig_strength.update_xaxes(tickformat="%Y-%m-%d")
+
+        sel_strength = st.plotly_chart(fig_strength, on_select="rerun", key="chart_strength", width='stretch')
+
+        if sel_strength.selection.points:
+            _cx = sel_strength.selection.points[0]["x"]
+            _ct = pd.Timestamp(_cx).normalize()
+            _cm = _ct - pd.Timedelta(days=_ct.weekday())
+            _cwp = round((current_week_start - _cm).days / 7)
+            if st.session_state.get('sel_strength_wp') != _cwp:
+                st.session_state['sel_strength_wp'] = _cwp
+                st.rerun()
+
+        if st.session_state.get('sel_strength_wp') is not None:
+            sel_wp = st.session_state['sel_strength_wp']
+            sel_monday = current_week_start - pd.Timedelta(weeks=sel_wp)
+            week_sessions = df_strength_restrict[
+                (df_strength_restrict['WEEKS_PAST'] == sel_wp) &
+                df_strength_restrict['DURATION_MINS'].notna()
+            ].copy()
+            if not week_sessions.empty:
+                week_sessions['Date'] = pd.to_datetime(week_sessions['START_TIME']).dt.date
+                week_sessions['Duration'] = week_sessions['DURATION_MINS'].apply(
+                    lambda m: f"{int(m)//60}:{int(m)%60:02d}" if pd.notna(m) else ''
+                )
+                week_sessions['Planned Duration'] = week_sessions['TOTAL_TIME_PLANNED'].apply(
+                    lambda s: f"{int(s)//3_600_000}:{int(s)%3_600_000//60_000:02d}" if pd.notna(s) and s > 0 else ''
+                )
+                week_sessions['TSS'] = week_sessions['TSS'].round(1)
+                week_sessions['Description'] = week_sessions['DESCRIPTION'].fillna('').astype(str).str.replace(r'<br\s*/?>', ' ', regex=True).str.strip()
+                tbl = week_sessions[['Date', 'Duration', 'Planned Duration', 'TSS', 'Description']].sort_values('Date').reset_index(drop=True)
+                st.markdown(f"**Strength sessions \u2014 w/c {sel_monday.strftime('%d %b %Y')}**")
+                st.dataframe(tbl, hide_index=True, use_container_width=True)
+            else:
+                st.info(f"No strength sessions found for w/c {sel_monday.strftime('%d %b %Y')}.")
+    else:
+        st.info("No strength data available for the selected athlete and time period.")
+
+# TAB 5: Power Zone Distribution (Raw)
+with tab5:
     st.subheader("Power Zone Distribution")
     
     if not df_athlete_data_zones_restrict.empty:
@@ -715,8 +1079,8 @@ with tab4:
             
             st.plotly_chart(fig_weekly, width='stretch')
 
-# TAB 5: Power Zone Distribution (Percentage)
-with tab5:
+# TAB 6: Power Zone Distribution (Percentage)
+with tab6:
     st.subheader("Power Zone Distribution (%)")
     
     if not df_athlete_data_zones_restrict.empty and 'POWER_ZONE_LABEL' in df_athlete_data_zones_restrict.columns and 'POWER_ZONE_SECONDS' in df_athlete_data_zones_restrict.columns:
