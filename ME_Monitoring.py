@@ -375,7 +375,7 @@ def _athlete_hero_periods(today):
     periods = []
     for label, days in [
         ("Last 7 days", 7),
-        ("Last month", 30),
+        ("Last 6 weeks", 42),
         ("Last 3 months", 90),
         ("Last year", 365),
     ]:
@@ -437,6 +437,7 @@ def render_athlete_hero_tiles(data, metric, bike_only, today):
     if data.empty:
         return
 
+    st.subheader("Weekly averages")
     hero_periods = _athlete_hero_periods(today)
     columns = st.columns(4)
     for column, period in zip(columns, hero_periods):
@@ -472,12 +473,36 @@ def render_athlete_hero_tiles(data, metric, bike_only, today):
         def _format_total(value):
             return f"{_format_number(value)} {unit}".strip()
 
+        def _format_weekly_summary(value, period_weeks):
+            weekly_unit = {
+                "Training Time": "h/wk",
+                "TSS": "",
+                "Energy (kJ)": "kJ/wk",
+                "Strength": "h/wk",
+                "Power Zones": "min/wk",
+            }[metric]
+            total_unit = {
+                "Training Time": "h",
+                "TSS": "",
+                "Energy (kJ)": "kJ",
+                "Strength": "h",
+                "Power Zones": "min",
+            }[metric]
+            weekly_label = f"{_format_number(value / period_weeks)} {weekly_unit}".strip()
+            total_label = f"{_format_number(value)} {total_unit}".strip()
+            return f"{weekly_label} ({total_label})"
+
         if metric != "Power Zones %":
-            display_value = (
-                _format_number(current_value)
-                if metric == "Power Zones"
-                else _format_total(current_value)
-            )
+            if period["label"] in ("Last 6 weeks", "Last 3 months", "Last year"):
+                current_start, current_end = period["current"]
+                period_weeks = ((current_end - current_start).days + 1) / 7
+                display_value = _format_weekly_summary(current_value, period_weeks)
+            else:
+                display_value = (
+                    _format_number(current_value)
+                    if metric == "Power Zones"
+                    else _format_total(current_value)
+                )
 
         def _shift_indicator(reference):
             if not reference:
@@ -489,10 +514,12 @@ def render_athlete_hero_tiles(data, metric, bike_only, today):
                 return f":red[\u2193 {shift:+.1f}%]"
             return ":gray[\u2192 0.0%]"
 
-        def _comparison_value(value):
+        def _comparison_value(value, comparison_period):
             if metric == "Power Zones %":
                 return f"{zone}: {value:.1f}%"
-            return _format_total(value)
+            start_date, end_date = comparison_period
+            period_weeks = ((end_date - start_date).days + 1) / 7
+            return _format_weekly_summary(value, period_weeks)
 
         current_start, current_end = period["current"]
         previous_start, previous_end = period["previous"]
@@ -508,12 +535,12 @@ def render_athlete_hero_tiles(data, metric, bike_only, today):
                 st.caption(f"{current_start:%d %b %Y} - {current_end:%d %b %Y}")
                 st.caption(
                     f"vs {previous_start:%d %b %Y} - {previous_end:%d %b %Y}: "
-                    f"{_comparison_value(previous_value)} "
+                    f"{_comparison_value(previous_value, period['previous'])} "
                     f"({_shift_indicator(previous_value)})"
                 )
                 st.caption(
                     f"vs {year_ago_start:%d %b %Y} - {year_ago_end:%d %b %Y}: "
-                    f"{_comparison_value(year_ago_value)} "
+                    f"{_comparison_value(year_ago_value, period['year_ago'])} "
                     f"({_shift_indicator(year_ago_value)})"
                 )
 
